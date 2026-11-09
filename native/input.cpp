@@ -56,12 +56,21 @@ class Injector {
 
   public:
     explicit Injector(const std::string &name) {
-        d = XOpenDisplay(name.c_str());
+        auto deadline = Clock::now() + std::chrono::seconds(1);
+        do {
+            d = XOpenDisplay(name.c_str());
+            if (d)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        } while (Clock::now() < deadline);
         if (!d)
             throw std::runtime_error("Cannot open input display");
         int a, b, c, e;
-        if (!XTestQueryExtension(d, &a, &b, &c, &e))
+        if (!XTestQueryExtension(d, &a, &b, &c, &e)) {
+            XCloseDisplay(d);
+            d = nullptr;
             throw std::runtime_error("XTest unavailable");
+        }
     }
     ~Injector() {
         if (d) {

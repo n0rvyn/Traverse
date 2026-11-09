@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include "endpoint_settings.hpp"
+#include <arpa/inet.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 
@@ -632,6 +633,39 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Required: --cert FILE --key FILE --origin https://HOST:PORT");
         auto base_path =
             traverse::EndpointSettings::normalize_base_path(args.get("--base-path", "/"));
+        if (args.has("--check-udp-port")) {
+            const auto media_port = std::stoi(args.get("--udp-port"));
+            if (media_port < 1 || media_port > 65535)
+                throw std::runtime_error("Invalid media UDP port");
+            for (int family : {AF_INET, AF_INET6}) {
+                int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+                if (fd < 0) {
+                    if (family == AF_INET6 && errno == EAFNOSUPPORT)
+                        continue;
+                    throw std::runtime_error("Cannot inspect media UDP port");
+                }
+                sockaddr_in v4{};
+                sockaddr_in6 v6{};
+                v4.sin_family = AF_INET;
+                v4.sin_port = htons(media_port);
+                v6.sin6_family = AF_INET6;
+                v6.sin6_port = htons(media_port);
+                int only = 1;
+                if (family == AF_INET6 &&
+                    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only))) {
+                    close(fd);
+                    throw std::runtime_error("Cannot inspect IPv6 media UDP port");
+                }
+                int bound = family == AF_INET
+                                ? bind(fd, reinterpret_cast<sockaddr *>(&v4), sizeof(v4))
+                                : bind(fd, reinterpret_cast<sockaddr *>(&v6), sizeof(v6));
+                const int error = errno;
+                close(fd);
+                if (bound)
+                    throw std::runtime_error("Cannot bind media UDP port: " +
+                                             std::string(std::strerror(error)));
+            }
+        }
         gst_init(nullptr, nullptr);
         // Load the real peer plugins before advertising a ready endpoint. The
         // low-port path uses only the installed, root-owned plugin registry.

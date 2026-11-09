@@ -32,6 +32,8 @@ mv /tmp/relocated/traverse/lib/libsoftokn3.so.missing /tmp/relocated/traverse/li
 gcc /src/tests/x11_input_probe.c -o /tmp/x11-probe -lX11 -lXtst
 xvfb-run -a python3 /src/tests/installed_dialog.py
 xvfb-run -a python3 /src/tests/installed_launcher.py
+xvfb-run -a python3 /src/tests/installed_standalone.py
+xvfb-run -a -s '-screen 0 1280x800x24 -extension XTEST' python3 /src/tests/installed_guardian_startup.py
 apt-get remove -y traverse
 test ! -e /opt/traverse/libexec/traverse/traverse-service
 test ! -e /opt/traverse/share/traverse/registry.bin

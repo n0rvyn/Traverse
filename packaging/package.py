@@ -160,9 +160,9 @@ def main():
         if source.is_file():shutil.copy2(source,notices/(package.replace(':','-')+'.copyright'))
     manifest.update(version=version,architecture=architecture,sourceCommit=os.environ.get('SOURCE_COMMIT') or run(['git','-c','safe.directory='+str(ROOT),'-C',ROOT,'rev-parse','HEAD']).strip(),baselineImage=os.environ.get('BUILD_BASE_IMAGE','ubuntu:22.04'),distributionPackages=run(['dpkg-query','-W','-f=${Package}=${Version}\n']).splitlines())
     if not re.fullmatch(r'[a-f0-9]{40}',manifest['sourceCommit']):raise ValueError('Invalid source commit identity')
+    shutil.copy2(ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',prefix/'share/traverse/libnice.patch')
     manifest['payloadSha256']={str(p.relative_to(prefix)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(prefix.rglob('*')) if p.is_file()}
     (prefix/'share/traverse/runtime-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-    shutil.copy2(ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',prefix/'share/traverse/libnice.patch')
     run([bindir/'traverse','--check-runtime'])
     epoch=int(os.environ['SOURCE_DATE_EPOCH'])
     def normalize(info):

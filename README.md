@@ -2,7 +2,7 @@
 
 Native Linux desktop sharing in ordinary Chrome, built with C++17, GStreamer and WebRTC. No browser extension and no RDP/VNC wrapper.
 
-**Status:** working existing-X11-session slice; installable-package and desktop compatibility work is in progress. Native Wayland/GNOME/KDE verification, automatic public-URL checks and hardware-encoding optimization are planned, not claimed complete.
+**Status:** working existing-X11-session core with DEB/RPM/portable packages. Single-port setup, native host controls, automatic public-URL checks, native Wayland/GNOME/KDE verification and hardware-encoding optimization are active development work. No stable release has been published.
 
 ## How it works
 
@@ -25,22 +25,21 @@ cmake --build build
 
 Review the [libnice reconnect patch](patches/README.md) when using a system libnice. The package build pins its runtime separately so it does not replace the host's media libraries.
 
-## Run against an existing X11 desktop
+## Run the package
 
-Run as the desktop owner with a valid `DISPLAY`/`XAUTHORITY` and a private runtime directory:
+Run as the desktop owner with a valid `DISPLAY`/`XAUTHORITY` and a private runtime directory. Create your configuration from `/opt/traverse/share/traverse/config.example.json`; set the self-hosted domain and trusted certificate/key paths. The versioned configuration defaults to443 and lets you choose another Chrome-compatible port:
 
 ```sh
-build/traverse-adapter --display "$DISPLAY" --socket "$XDG_RUNTIME_DIR/traverse/adapter.sock"
-build/traverse-service \
-  --socket "$XDG_RUNTIME_DIR/traverse/adapter.sock" --web "$PWD/web" \
-  --origin https://desktop.example.com:8443 \
-  --cert /path/to/fullchain.pem --key /path/to/private-key.pem \
-  --port 8443 --udp-port 50000
+traverse --check-runtime
+traverse --config /path/to/config.json --check-config
+traverse --config /path/to/config.json
 ```
 
-Open the URL in ordinary Chrome and enter the pairing code shown locally. The current low-level demo uses explicit HTTPS/media ports; the [roadmap](docs/roadmap.md) includes configurable default443 and proxy-aware setup. Do not set HTTPS and passive ICE-TCP to the same TCP port without a supported routing configuration.
+Open the displayed URL in ordinary Chrome and enter the pairing code shown locally. The standalone launcher uses TCP on your chosen port for HTTPS and authenticated TURN/TLS fallback, plus UDP on the same port for direct media. Configure both protocols in the firewall/router. Local Stop sharing ends the owned sharing processes; ordinary browser disconnect still permits supported reconnect. See [installation and permissions](docs/install.md).
 
-A trusted certificate and a reachable network route are required. A standalone package cannot create a public domain or router forwarding by itself. A page reload currently requires pairing again; local Stop sharing remains authoritative.
+Existing configurations without `schemaVersion` retain their original HTTPS/media ports; `config.legacy.example.json` documents that format. A port conflict fails without replacing an existing service or selecting a different port. Portable archives have no binding capabilities and can use an editable high port. Native-package low-port support uses a constrained helper with the original desktop UID/GID.
+
+A trusted certificate and a reachable network route are required. Startup verifies its own HTTPS endpoint and configured hostname; this local check does not prove public DNS, firewall or NAT reachability. Automatic external checks and integrated first-run host controls remain on the [roadmap](docs/roadmap.md). A page reload currently requires pairing again; local Stop sharing remains authoritative.
 
 ## Evidence and limits
 

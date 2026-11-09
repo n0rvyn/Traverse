@@ -57,7 +57,7 @@ def read_message(stream, transaction=None, key=None):
     error = attrs.get(9)
     code = (error[2] & 7)*100+error[3] if error else None
     if key and code not in (401, 438):
-        assert integrity is not None, 'Authenticated TURN response omitted integrity'
+        assert integrity is not None, f'Authenticated TURN response omitted integrity (error {code})'
         adjusted = struct.pack('!HHI12s', kind, integrity+24, cookie, returned)
         assert hmac.compare_digest(attrs[8], hmac.new(key, adjusted+body[:integrity], hashlib.sha1).digest())
     return kind, attrs, code

@@ -67,8 +67,11 @@ class Worker {
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets))
             throw std::runtime_error("socketpair failed");
         pid = fork();
-        if (pid < 0)
+        if (pid < 0) {
+            close(sockets[0]);
+            close(sockets[1]);
             throw std::runtime_error("fork failed");
+        }
         if (pid == 0) {
             dup2(sockets[1], STDIN_FILENO);
             close(sockets[0]);
@@ -79,6 +82,18 @@ class Worker {
         }
         close(sockets[1]);
         fd = sockets[0];
+        try {
+            // Readiness includes the independent injector, not just the IPC server.
+            call({{"type", "heartbeat"}});
+        } catch (...) {
+            close(fd);
+            fd = -1;
+            // No input has been accepted yet, so there are no held keys to release.
+            kill(pid, SIGKILL);
+            while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+            pid = -1;
+            throw;
+        }
     }
     void call(const json &e) {
         std::lock_guard lock(mutex);
@@ -185,7 +200,7 @@ class Adapter {
         unsigned int w, h, b, depth;
         XGetGeometry(d, DefaultRootWindow(d), &root, &x, &y, &w, &h, &b, &depth);
         XCloseDisplay(d);
-        return {{"armed", armed},       {"paired", paired}, {"capturing", pipeline != nullptr},
+        return {{"pid", getpid()}, {"armed", armed},       {"paired", paired}, {"capturing", pipeline != nullptr},
                 {"width", w},           {"height", h},      {"frameSocket", frame_socket},
                 {"accepted", accepted}, {"denied", denied}};
     }

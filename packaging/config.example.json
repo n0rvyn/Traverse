@@ -1,8 +1,9 @@
 {
-  "origin": "https://desktop.example.com:8443",
+  "schemaVersion": 1,
+  "domain": "desktop.example.com",
+  "port": 443,
+  "basePath": "/",
   "certificate": "/path/to/fullchain.pem",
   "privateKey": "/path/to/private-key.pem",
-  "httpsPort": 8443,
-  "mediaPort": 50000,
   "listenAddress": "0.0.0.0"
 }

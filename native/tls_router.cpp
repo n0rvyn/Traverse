@@ -131,22 +131,38 @@ struct TlsRouter::Impl {
             SSL_CTX_check_private_key(context.get()) != 1)
             throw std::runtime_error("TLS certificate/key unavailable");
         SSL_CTX_set_alpn_select_cb(context.get(), alpn, nullptr);
-        listener.fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        sockaddr_storage storage{};
+        auto *v4 = reinterpret_cast<sockaddr_in *>(&storage);
+        auto *v6 = reinterpret_cast<sockaddr_in6 *>(&storage);
+        int family;
+        socklen_t size;
+        if (inet_pton(AF_INET, config.address.c_str(), &v4->sin_addr) == 1) {
+            family = AF_INET;
+            v4->sin_family = AF_INET;
+            v4->sin_port = htons(config.port);
+            size = sizeof(*v4);
+        } else if (inet_pton(AF_INET6, config.address.c_str(), &v6->sin6_addr) == 1) {
+            family = AF_INET6;
+            v6->sin6_family = AF_INET6;
+            v6->sin6_port = htons(config.port);
+            size = sizeof(*v6);
+        } else {
+            throw std::runtime_error("TLS listener address must be a numeric IP address");
+        }
+        listener.fd = socket(family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
         if (listener.fd < 0)
             throw std::runtime_error("Cannot create TLS listener");
         int reuse = 1;
         setsockopt(listener.fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_port = htons(config.port);
-        if (inet_pton(AF_INET, config.address.c_str(), &address.sin_addr) != 1 ||
-            bind(listener.fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) ||
+        if (family == AF_INET6 &&
+            setsockopt(listener.fd, IPPROTO_IPV6, IPV6_V6ONLY, &reuse, sizeof(reuse)))
+            throw std::runtime_error("Cannot configure IPv6 TLS listener");
+        if (bind(listener.fd, reinterpret_cast<sockaddr *>(&storage), size) ||
             listen(listener.fd, SOMAXCONN))
             throw std::runtime_error("Cannot bind TLS listener");
-        socklen_t size = sizeof(address);
-        if (getsockname(listener.fd, reinterpret_cast<sockaddr *>(&address), &size))
+        if (getsockname(listener.fd, reinterpret_cast<sockaddr *>(&storage), &size))
             throw std::runtime_error("Cannot inspect TLS listener");
-        bound_port = ntohs(address.sin_port);
+        bound_port = ntohs(family == AF_INET ? v4->sin_port : v6->sin6_port);
         drop_bind_privilege();
         acceptor = std::thread([this] { accept_loop(); });
     }

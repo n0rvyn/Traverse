@@ -5,7 +5,7 @@ The current native C++/GStreamer slice shares one existing X11 desktop with ordi
 Active delivery work:
 
 1. Native DEB/RPM/portable packages with private, reproducible media dependencies and safe lifecycle.
-2. Self-hosted HTTPS URL setup; default443 proposal plus configurable port, protocol-aware conflict detection and certificate lifecycle.
+2. Self-hosted HTTPS URL setup; approved default443 plus configurable port, protocol-aware conflict detection and certificate lifecycle.
 3. Native host controls and automatic URL/media checks through an independent, self-hostable observer; truthful failure notifications.
 4. GNOME/KDE compatibility on X11 and Wayland through supported desktop consent, PipeWire capture and input APIs.
 5. Per-stage performance measurements and equal-quality software/GPU capture/encode/decode comparisons on actual hardware.

@@ -8,6 +8,12 @@ Installation runs an encrypted synthetic-media check and creates a root-owned pl
 
 The package tests exercise these permissions under an unprivileged UID inside fresh containers, including a low-port negative control, real TLS connections and every live thread's capability sets. Container-only namespace and observer permissions used for these tests are not installation requirements or host configuration changes.
 
-Portable archives do not carry file capabilities. A custom port1024 or above needs no binding helper; installing low-port permission requires an administrator-reviewed, root-owned installation. Do not run the desktop capture with `sudo` or change the host's global low-port policy. The self-hosted domain, TLS settings, default443/custom-port setup and standalone launcher integration remain active development work. Existing legacy configurations retain their configured ports.
+Portable archives do not carry file capabilities. A custom port1024 or above needs no binding helper; installing low-port permission requires an administrator-reviewed, root-owned installation. Do not run the desktop capture with `sudo` or change the host's global low-port policy.
+
+Create your configuration from `/opt/traverse/share/traverse/config.example.json` and supply the domain, certificate and private-key paths. New `schemaVersion: 1` configurations default to443; `port` is editable, and `basePath` optionally places the client under a URL prefix. Run `traverse --config FILE --check-config`, then `traverse --config FILE` as the desktop owner. TLS paths can be absolute or relative to that new configuration file. Open the displayed URL in Chrome and use the local pairing code.
+
+The standalone endpoint needs the chosen TCP and UDP port. TCP carries HTTPS and authenticated TURN/TLS fallback; direct WebRTC media uses UDP. Startup checks actual TCP/UDP binding availability and verifies local HTTPS trust and hostname before displaying readiness. It does not yet prove public reachability. A conflict fails without changing the existing service or choosing a different port. Integrated first-run host controls, external checks and certificate provisioning/renewal remain in development.
+
+Existing configurations without `schemaVersion` retain their original HTTPS/media ports and legacy relative-path behavior. The separate `config.legacy.example.json` documents that format. Automatic Caddy or other reverse-proxy reconfiguration is not part of standalone launch.
 
 Uninstall removes installed programs and the generated registry. User configuration and desktop data are retained. Existing Apex/Caddy or SSH listeners are never replaced automatically.

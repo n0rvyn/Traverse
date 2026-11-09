@@ -121,7 +121,7 @@ def main():
         backend = port()
         service_args = ['--internal-http', '--host', '127.0.0.1', '--port', str(backend),
                         '--origin', 'https://localhost', '--socket', str(runtime/'absent.sock'),
-                        '--web', str(PREFIX/'share/traverse/web'), '--udp-port', '443']
+                        '--web', str(PREFIX/'share/traverse/web'), '--udp-port', '443', '--check-udp-port']
         with running('service', service_args, directory, hostile) as service:
             deadline = time.monotonic()+15
             while True:
@@ -139,6 +139,9 @@ def main():
                 assert actual_env[name.encode()].startswith(bytes(PREFIX)), (name, actual_env)
             assert actual_env[b'GST_REGISTRY_1_0'] == bytes(PREFIX/'share/traverse/registry.bin')
             assert actual_env[b'GST_REGISTRY_UPDATE'] == b'no'
+            assert actual_env[b'HOME'] == bytes(PREFIX)
+            for name in ['DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS']:
+                assert name.encode() not in actual_env
             for name in ['LD_PRELOAD', 'OPENSSL_CONF', 'OPENSSL_MODULES', 'GIO_EXTRA_MODULES']:
                 assert name.encode() not in actual_env
             maps = Path(f'/proc/{service.pid}/maps').read_text()

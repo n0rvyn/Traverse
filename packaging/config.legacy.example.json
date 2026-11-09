@@ -1,0 +1,8 @@
+{
+  "origin": "https://desktop.example.com:8443",
+  "certificate": "/path/to/fullchain.pem",
+  "privateKey": "/path/to/private-key.pem",
+  "httpsPort": 8443,
+  "mediaPort": 50000,
+  "listenAddress": "0.0.0.0"
+}

@@ -86,8 +86,9 @@ class RouterTests(unittest.TestCase):
         self.http, self.turn = Witness(b'H:'), Witness(b'T:')
         self.start(self.http.server_address[1], self.turn.server_address[1])
 
-    def start(self, http, turn):
-        self.process = subprocess.Popen([BINARY, '--host', '127.0.0.1', '--port', '0',
+    def start(self, http, turn, host='127.0.0.1'):
+        self.host = host
+        self.process = subprocess.Popen([BINARY, '--host', host, '--port', '0',
                                          '--http-port', str(http), '--turn-port', str(turn),
                                          '--supervisor-pid', str(os.getpid()),
                                          '--cert', str(self.cert), '--key', str(self.key)],
@@ -115,7 +116,7 @@ class RouterTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def tls(self, context=None):
-        raw = socket.create_connection(('127.0.0.1', self.port), timeout=3)
+        raw = socket.create_connection((self.host, self.port), timeout=3)
         try:
             stream = (context or self.context).wrap_socket(raw, server_hostname='localhost')
             try:
@@ -131,6 +132,16 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(stream.selected_alpn_protocol(), 'http/1.1')
             for byte in payload:
                 stream.sendall(bytes([byte]))
+            self.assertEqual(receive(stream, len(payload)+2), b'H:'+payload)
+        self.assertEqual(self.http.accepted, 1)
+        self.assertEqual(self.turn.accepted, 0)
+
+    def test_ipv6_listener_routes_to_fixed_ipv4_loopback_backend(self):
+        self.stop()
+        self.start(self.http.server_address[1], self.turn.server_address[1], '::1')
+        payload = b'GET /ipv6 HTTP/1.1\r\nHost: localhost\r\n\r\n'
+        with self.tls() as stream:
+            stream.sendall(payload)
             self.assertEqual(receive(stream, len(payload)+2), b'H:'+payload)
         self.assertEqual(self.http.accepted, 1)
         self.assertEqual(self.turn.accepted, 0)

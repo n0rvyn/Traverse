@@ -113,22 +113,13 @@ int main(int argc, char **argv) {
     if (access(target, X_OK))
         fail("Installed role is not executable");
 
-    const char *names[] = {"HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "DISPLAY",
-                           "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"};
-    char *session[sizeof(names) / sizeof(names[0])] = {0};
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        const char *text = getenv(names[i]);
-        if (text && !(session[i] = strdup(text)))
-            fail("Cannot save user session environment");
-    }
     if (clearenv())
         fail("Cannot clear inherited environment");
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        if (session[i]) {
-            value(names[i], session[i]);
-            free(session[i]);
-        }
-    }
+    // These network-only roles receive absolute paths. Desktop/session access
+    // stays in the unprivileged adapter, not this capability-bearing process.
+    if (chdir(prefix))
+        fail("Cannot enter trusted private runtime directory");
+    value("HOME", prefix);
     value("PATH", "/usr/bin:/bin");
     value("LANG", "C.UTF-8");
     value("TRAVERSE_RUNTIME_PREFIX", prefix);
@@ -143,7 +134,7 @@ int main(int argc, char **argv) {
     value("GST_REGISTRY_1_0", registry);
     value("GST_REGISTRY_UPDATE", "no");
     /* No inherited OpenSSL/provider/loader/plugin configuration is accepted.
-     * OpenSSL continues to use its trusted system policy and default providers. */
+     * OpenSSL's compiled default config/provider search remains unchanged. */
     if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0))
         fail("Cannot clear inherited ambient capabilities");
     data[0].effective = data[0].permitted = data[0].inheritable = binding;
