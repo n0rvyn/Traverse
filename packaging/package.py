@@ -143,7 +143,11 @@ def main():
             target=notices/source.name;target.mkdir()
             for pattern in ['COPYING*','LICENSE*','NOTICE*']:
                 for file in source.glob(pattern):
-                    if file.is_file():shutil.copy2(file,target/file.name)
+                    if file.is_file():
+                        shutil.copy2(file,target/file.name)
+                        # Upstream source notices can be group-writable (0664).
+                        # Installed runtime files must satisfy the helper trust policy.
+                        (target/file.name).chmod(0o644)
     # Include notices for the distribution-provided runtime libraries/executable.
     packages=set()
     for source in sorted(origins):
