@@ -10,6 +10,10 @@ def validate(tag, version):
     if tag[1:]!=version:raise ValueError('Tag does not match CMake project version')
 
 
+def require_main_commit(sha, repository="."):
+    subprocess.run(["git","-C",str(repository),"merge-base","--is-ancestor",sha,"origin/main"],check=True)
+
+
 def main():
     tag=sys.argv[1]
     root=Path(__file__).resolve().parent.parent
@@ -18,7 +22,7 @@ def main():
     sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
     tag_sha=subprocess.check_output(['git','rev-parse',tag+'^{commit}'],text=True).strip()
     if sha!=tag_sha:raise ValueError('Checkout is not the exact release tag commit')
-    subprocess.run(['git','merge-base','--is-ancestor',tag_sha,'origin/main'],check=True)
+    require_main_commit(tag_sha)
     print(sha)
 
 

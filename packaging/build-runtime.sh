@@ -6,6 +6,7 @@ work=${TRAVERSE_BUILD_WORK:-"$root/.work"}
 prefix="$work/runtime"
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$root" -C "$root" log -1 --format=%ct)}
 export DEBIAN_FRONTEND=noninteractive
+if [[ -n ${SOURCE_COMMIT:-} && ! $SOURCE_COMMIT =~ ^[a-f0-9]{40}$ ]]; then echo "Invalid SOURCE_COMMIT" >&2; exit 1; fi
 sed -n 's/^deb /deb-src /p' /etc/apt/sources.list > /etc/apt/sources.list.d/traverse-sources.list
 apt-get update
 apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config python3 python3-venv python3-pip curl ca-certificates flex bison patch git \

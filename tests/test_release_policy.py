@@ -18,9 +18,10 @@ class ReleasePolicyTests(unittest.TestCase):
             git('init','-b','main');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid')
             git('commit','--allow-empty','-m','baseline');git('branch','origin/main');git('switch','-c','dev')
             git('commit','--allow-empty','-m','daily work');git('tag','v0.1.0')
-            result=subprocess.run(['git','-C',tmp,'merge-base','--is-ancestor','v0.1.0','origin/main'],capture_output=True)
-            self.assertEqual(result.returncode,1)
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                policy.require_main_commit('v0.1.0',tmp)
+            self.assertEqual(failure.exception.returncode,1)
             git('switch','main');git('merge','--no-ff','dev','-m','milestone');git('branch','-f','origin/main','main')
-            self.assertEqual(git('merge-base','--is-ancestor','v0.1.0','origin/main').returncode,0)
+            policy.require_main_commit('v0.1.0',tmp)
 
 if __name__=='__main__':unittest.main()
