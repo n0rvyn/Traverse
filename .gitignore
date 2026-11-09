@@ -1,0 +1,27 @@
+# Local environments and builds
+.venv/
+__pycache__/
+node_modules/
+.runtime/
+build/
+dist/
+.work/
+.claude/
+# Credentials and operator/test evidence (kept on disk)
+*.pem
+*.key
+*.p12
+.env
+.env.*
+!.env.example
+docs/private/
+docs/evidence/
+docs/brief.txt
+docs/01-discovery/
+docs/06-plans/
+docs/verification.md
+# Host-specific fault/probe tools remain local; generic tests live in tests/
+scripts/
+# Archived exploratory prototype, not part of the public runtime
+experiments/
+.DS_Store

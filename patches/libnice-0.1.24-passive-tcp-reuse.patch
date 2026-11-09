@@ -1,0 +1,9 @@
+Local compatibility patch for rapid reconnect on one fixed ICE port.
+The previous passive connection can remain in TCP TIME_WAIT after revoke.
+SO_REUSEADDR permits rebinding after teardown; SO_REUSEPORT is not enabled.
+
+--- a/socket/tcp-passive.c
++++ b/socket/tcp-passive.c
+@@ -133 +133 @@
+-  gret = g_socket_bind (gsock, gaddr, FALSE, error) &&
++  gret = g_socket_bind (gsock, gaddr, TRUE, error) &&
