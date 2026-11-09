@@ -2,6 +2,7 @@
 set -eu
 self=$(readlink -f -- "$0")
 prefix=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
+export TRAVERSE_RUNTIME_PREFIX="$prefix"
 export LD_LIBRARY_PATH="$prefix/lib"
 export PATH="$prefix/libexec/traverse:$PATH"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$prefix/lib/gstreamer-1.0"

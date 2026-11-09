@@ -1,14 +1,86 @@
 {
-  "baseline": {"image": "ubuntu:22.04", "glibc_max": "2.35", "architectures": ["x86_64", "aarch64"]},
+  "baseline": {
+    "image": "ubuntu:22.04",
+    "glibc_max": "2.35",
+    "architectures": [
+      "x86_64",
+      "aarch64"
+    ]
+  },
   "sources": [
-    {"name":"gstreamer","version":"1.26.11","url":"https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.26.11.tar.xz","sha256":"2e0bd192d0438ea606a6f76a95c8e16542167656ffec2c2bc3aaf6ee0837fbf6"},
-    {"name":"gst-plugins-base","version":"1.26.11","url":"https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.26.11.tar.xz","sha256":"fc50f885d41f5d0407ce0876ec7235d9e7b82d48db2f4bc72c5f244a4ac79263"},
-    {"name":"gst-plugins-good","version":"1.26.11","url":"https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.26.11.tar.xz","sha256":"001deb0876d5d743cd3448abf74a27adec3fd850012fcb1b00994861bd6c1145"},
-    {"name":"gst-plugins-bad","version":"1.26.11","url":"https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.26.11.tar.xz","sha256":"110fb82795f0e569b1e27b12ab9699d35c7762e1ff4db95335d6ac8d1442af3d"},
-    {"name":"libnice","version":"0.1.24","url":"https://libnice.freedesktop.org/releases/libnice-0.1.24.tar.gz","sha256":"cfb5e8e778534f2f5b3c6f4958a1eb057c6b95c537c0f100817a537cf5d64fcc"},
-    {"name":"cpp-httplib","version":"0.51.0","url":"https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.51.0.tar.gz","sha256":"d740ced75352f44e9d66d08806dc231b5621bb3592b5a5d5b2bd890a9a9d86cc"}
+    {
+      "name": "gstreamer",
+      "version": "1.26.11",
+      "url": "https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.26.11.tar.xz",
+      "sha256": "2e0bd192d0438ea606a6f76a95c8e16542167656ffec2c2bc3aaf6ee0837fbf6"
+    },
+    {
+      "name": "gst-plugins-base",
+      "version": "1.26.11",
+      "url": "https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.26.11.tar.xz",
+      "sha256": "fc50f885d41f5d0407ce0876ec7235d9e7b82d48db2f4bc72c5f244a4ac79263"
+    },
+    {
+      "name": "gst-plugins-good",
+      "version": "1.26.11",
+      "url": "https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.26.11.tar.xz",
+      "sha256": "001deb0876d5d743cd3448abf74a27adec3fd850012fcb1b00994861bd6c1145"
+    },
+    {
+      "name": "gst-plugins-bad",
+      "version": "1.26.11",
+      "url": "https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.26.11.tar.xz",
+      "sha256": "110fb82795f0e569b1e27b12ab9699d35c7762e1ff4db95335d6ac8d1442af3d"
+    },
+    {
+      "name": "libnice",
+      "version": "0.1.24",
+      "url": "https://libnice.freedesktop.org/releases/libnice-0.1.24.tar.gz",
+      "sha256": "cfb5e8e778534f2f5b3c6f4958a1eb057c6b95c537c0f100817a537cf5d64fcc"
+    },
+    {
+      "name": "cpp-httplib",
+      "version": "0.51.0",
+      "url": "https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.51.0.tar.gz",
+      "sha256": "d740ced75352f44e9d66d08806dc231b5621bb3592b5a5d5b2bd890a9a9d86cc"
+    }
   ],
-  "runtime_executables": ["xmessage", "gst-plugin-scanner"],
-  "host_dependencies": ["Linux glibc >= 2.35", "existing X11 desktop and core fonts", "CA certificate trust store"],
-  "plugins": ["ximagesrc","videoconvert","unixfdsink","unixfdsrc","vp8enc","rtpvp8pay","webrtcbin","nicesrc","dtlsenc","srtpenc","sctpenc"]
+  "runtime_executables": [
+    "xmessage",
+    "gst-plugin-scanner"
+  ],
+  "host_dependencies": [
+    "Linux glibc >= 2.35",
+    "existing X11 desktop and core fonts",
+    "CA certificate trust store"
+  ],
+  "plugins": [
+    "ximagesrc",
+    "videoconvert",
+    "unixfdsink",
+    "unixfdsrc",
+    "vp8enc",
+    "rtpvp8pay",
+    "webrtcbin",
+    "nicesrc",
+    "dtlsenc",
+    "srtpenc",
+    "sctpenc"
+  ],
+  "dynamic_provider_packages": [
+    {
+      "trigger": "libnss3.so",
+      "package": "libnss3",
+      "subdirectory": "nss",
+      "required": [
+        "libsoftokn3.so",
+        "libfreeblpriv3.so"
+      ],
+      "patterns": [
+        "*.so",
+        "*.chk"
+      ],
+      "preserve_bytes": true
+    }
+  ]
 }

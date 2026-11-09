@@ -99,10 +99,34 @@ def main():
         if elf in seen:continue
         seen.add(elf)
         pending.extend(collect_dependencies(elf,libdir,env,origins))
-    # Remove build-directory RUNPATHs only after dependency resolution.
+    # NSS loads its providers with dlopen: they are not in DT_NEEDED/ldd output.
+    # Keep paired .so/.chk bytes intact; mutation would break provider integrity checks.
+    preserved=set();provider_assets=[]
+    for provider in manifest.get('dynamic_provider_packages',[]):
+        if not (libdir/provider['trigger']).exists():continue
+        candidates=[Path(p).resolve().parent/provider['subdirectory'] for p in origins if Path(p).name==provider['trigger']]
+        candidates=[p for p in candidates if p.is_dir()]
+        if len(set(candidates))!=1:raise ValueError('Cannot locate matching provider directory: '+provider['trigger'])
+        directory=candidates[0]
+        for required in provider['required']:
+            if not (directory/required).is_file():raise ValueError('Missing required provider: '+required)
+        for pattern in provider['patterns']:
+            for file in sorted(directory.glob(pattern)):
+                target=libdir/file.name
+                if target.exists() and target.read_bytes()!=file.read_bytes():raise ValueError('Provider name collision: '+file.name)
+                shutil.copy2(file,target);origins.add(str(file))
+                provider_assets.append(str(target.relative_to(prefix)))
+                if is_elf(target):pending.append(target);preserved.add(target)
+        while pending:
+            elf=pending.pop()
+            if elf in seen:continue
+            seen.add(elf);pending.extend(collect_dependencies(elf,libdir,env,origins))
+    manifest['dynamicProviderAssets']=sorted(provider_assets)
+    # Remove build-directory RUNPATHs only after dependency resolution, never from
+    # integrity-checked provider binaries paired with vendor .chk files.
     for elf in seen:
         validate_abi(run(['readelf','--version-info',elf]),manifest['baseline']['glibc_max'])
-        subprocess.run(['patchelf','--remove-rpath',str(elf)],check=True)
+        if elf not in preserved:subprocess.run(['patchelf','--remove-rpath',str(elf)],check=True)
     bindir=prefix/'bin';bindir.mkdir()
     entry=(ROOT/'packaging/runtime-entry.sh').read_text().replace('@VERSION@',version)
     for name in ['traverse','traverse-adapter','traverse-service','traverse-runtime-check']:
