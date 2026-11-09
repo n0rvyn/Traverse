@@ -2,7 +2,7 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-base gcc libx11-dev libxtst-dev python3 openssl curl
+apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-base gcc libc6-dev libx11-dev libxtst-dev python3 openssl curl
 apt-get install -y /src/dist/*.deb
 traverse --check-runtime
 mkdir -p /tmp/relocated
