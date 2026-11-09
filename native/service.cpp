@@ -227,12 +227,21 @@ class Peer : public std::enable_shared_from_this<Peer> {
         std::cerr << "Peer " << generation << " build" << std::endl;
         if (!active)
             throw std::runtime_error("Peer stopped");
+        // SDP/RTX negotiation can precede the first encoded frame. Advertise the
+        // same per-peer SSRC that the payloader will use, even before live caps.
+        guint32 video_ssrc;
+        do {
+            if (RAND_bytes(reinterpret_cast<unsigned char *>(&video_ssrc), sizeof(video_ssrc)) != 1)
+                throw std::runtime_error("Cannot create video source identity");
+        } while (video_ssrc == 0 || video_ssrc == G_MAXUINT32);
         // The socket path is set as a property, never interpolated into a pipeline.
         pipeline =
             parse_pipeline("unixfdsrc name=source ! queue max-size-buffers=1 max-size-bytes=0 "
                            "max-size-time=0 leaky=downstream ! vp8enc name=encoder deadline=1 "
-                           "cpu-used=8 threads=2 keyframe-max-dist=60 ! rtpvp8pay pt=96 ! "
-                           "application/x-rtp,media=video,encoding-name=VP8,payload=96 ! webrtcbin "
+                           "cpu-used=8 threads=2 keyframe-max-dist=60 ! rtpvp8pay pt=96 ssrc=" +
+                           std::to_string(video_ssrc) +
+                           " ! application/x-rtp,media=video,encoding-name=VP8,payload=96,ssrc=(uint)" +
+                           std::to_string(video_ssrc) + " ! webrtcbin "
                            "name=rtc bundle-policy=max-bundle");
         auto *source = gst_bin_get_by_name(GST_BIN(pipeline), "source");
         g_object_set(source, "socket-path", frame_socket.c_str(), nullptr);
@@ -251,6 +260,22 @@ class Peer : public std::enable_shared_from_this<Peer> {
         g_object_set(encoder, "target-bitrate", bitrate, nullptr);
         gst_object_unref(encoder);
         rtc = gst_bin_get_by_name(GST_BIN(pipeline), "rtc");
+        // webrtcbin disables generic NACK and RTX by default. Enable recovery
+        // before SDP negotiation for both existing and subsequently added tracks.
+        g_signal_connect(rtc, "on-new-transceiver",
+                         G_CALLBACK(+[](GstElement *, GstWebRTCRTPTransceiver *transceiver,
+                                        gpointer) {
+                             g_object_set(transceiver, "do-nack", TRUE, nullptr);
+                         }),
+                         nullptr);
+        GArray *transceivers = nullptr;
+        g_signal_emit_by_name(rtc, "get-transceivers", &transceivers);
+        if (transceivers) {
+            for (guint i = 0; i < transceivers->len; ++i)
+                g_object_set(g_array_index(transceivers, GstWebRTCRTPTransceiver *, i),
+                             "do-nack", TRUE, nullptr);
+            g_array_unref(transceivers);
+        }
         if (!stun.empty())
             g_object_set(rtc, "stun-server", stun.c_str(), nullptr);
         GstWebRTCICE *ice = nullptr;
@@ -669,8 +694,9 @@ int main(int argc, char **argv) {
         gst_init(nullptr, nullptr);
         // Load the real peer plugins before advertising a ready endpoint. The
         // low-port path uses only the installed, root-owned plugin registry.
-        for (const char *name : {"unixfdsrc", "queue", "vp8enc", "rtpvp8pay", "webrtcbin",
-                                 "nicesrc", "dtlsenc", "srtpenc", "sctpenc"}) {
+        for (const char *name : {"unixfdsrc", "queue", "vp8enc", "rtpvp8pay", "rtprtxsend",
+                                 "rtprtxreceive", "webrtcbin", "nicesrc", "dtlsenc", "srtpenc",
+                                 "sctpenc"}) {
             auto *element = gst_element_factory_make(name, nullptr);
             if (!element)
                 throw std::runtime_error(std::string("Required media plugin unavailable: ") + name);

@@ -231,7 +231,8 @@ int main(int argc, char **argv) {
         bool ok = true;
         for (const char *name :
              {"ximagesrc", "videoconvert", "unixfdsink", "unixfdsrc", "vp8enc", "rtpvp8pay",
-              "webrtcbin", "nicesrc", "dtlsenc", "srtpenc", "sctpenc"}) {
+              "rtprtxsend", "rtprtxreceive", "webrtcbin", "nicesrc", "dtlsenc", "srtpenc",
+              "sctpenc"}) {
             auto *factory = gst_element_factory_find(name);
             result["plugins"][name] = factory != nullptr;
             ok = ok && factory;

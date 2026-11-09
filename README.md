@@ -47,4 +47,7 @@ On a two-core software-rendered test VM, two repeated visible-Chrome 1280×720 t
 
 Real X11 tests exercised typing/modifiers, scrolling, pointer mapping, application-window resize, reconnect, local revoke and crash handling. Direct UDP and a scoped authenticated TURN/TLS path were exercised. Private deployment traces are not published in this repository.
 
+See [performance evidence](docs/performance.md) for later packaged-path measurements,
+controlled packet-loss recovery checks and remaining relay variation.
+
 This app attaches to an existing session; it does not create or unlock a desktop, authenticate a remote login, or currently provide a browser terminal. See [contribution/release policy](CONTRIBUTING.md) and [roadmap](docs/roadmap.md).

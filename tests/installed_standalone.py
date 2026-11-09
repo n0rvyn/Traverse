@@ -174,6 +174,33 @@ def main():
                     assert credentials['urls'] == f'turns:localhost:{port}?transport=tcp'
                     assert paired.get('iceTransportPolicy', 'all') == 'all'
                     assert ipc(socket_path, '/state')['capturing']
+                    # Real service negotiation must identify the primary source
+                    # and associate RTX with it, including an early answer.
+                    # A second offer exercises the same path as reconnect.
+                    offer = '\r\n'.join([
+                        'v=0', 'o=- 1 1 IN IP4 127.0.0.1', 's=-', 't=0 0',
+                        'a=group:BUNDLE 0', 'm=video 9 UDP/TLS/RTP/SAVPF 96 97',
+                        'c=IN IP4 0.0.0.0', 'a=mid:0', 'a=recvonly', 'a=rtcp-mux',
+                        'a=ice-ufrag:test', 'a=ice-pwd:synthetic-negotiation-password',
+                        'a=setup:actpass', 'a=fingerprint:sha-256 '+':'.join(['AA']*32),
+                        'a=rtpmap:96 VP8/90000', 'a=rtcp-fb:96 nack',
+                        'a=rtcp-fb:96 nack pli', 'a=rtpmap:97 rtx/90000',
+                        'a=fmtp:97 apt=96', ''])
+                    sources = set()
+                    for _ in range(2):
+                        request = urllib.request.Request(origin+base+'api/offer',
+                            json.dumps({'type': 'offer', 'sdp': offer}).encode(),
+                            {'Origin': origin, 'Content-Type': 'application/json',
+                             'Authorization': 'Bearer '+paired['token']})
+                        with urllib.request.urlopen(request, context=context, timeout=20) as response:
+                            answer = json.loads(response.read())['sdp']
+                        assert 'a=rtpmap:97 rtx/90000' in answer
+                        association = re.search(r'^a=ssrc-group:FID (\d+) (\d+)\r?$', answer, re.M)
+                        assert association and association[1] != association[2], 'Missing primary/RTX association'
+                        assert re.search(r'^a=ssrc:'+association[1]+r' msid:', answer, re.M), 'Primary track absent'
+                        assert re.search(r'^a=ssrc:'+association[2]+r' msid:', answer, re.M), 'RTX track absent'
+                        sources.add(association[1])
+                    assert len(sources) == 2, 'Reconnected peers reused a source identity'
                     with socket.socket(type=socket.SOCK_DGRAM) as route:
                         route.connect(('192.0.2.1', 9));peer_ip = route.getsockname()[0]
                     relay = context.wrap_socket(socket.create_connection(('127.0.0.1', port), timeout=3), server_hostname='localhost')

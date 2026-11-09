@@ -75,6 +75,8 @@
     "unixfdsrc",
     "vp8enc",
     "rtpvp8pay",
+    "rtprtxsend",
+    "rtprtxreceive",
     "webrtcbin",
     "nicesrc",
     "dtlsenc",
