@@ -10,6 +10,6 @@ Artifacts: `.deb`, `.rpm`, portable `.tar.gz`, SHA256SUMS and corresponding thir
 
 Stable publication requires `vX.Y.Z` matching the CMake version, with the exact tag commit reachable from fully fetched `origin/main`. A dev-only descendant fails even if main is its ancestor. The release rebuild uses the validated commit SHA, runs package installation/relocation/dialog checks and publishes only its own artifacts after checks. Branch/PR workflows have read-only tokens and do not release or receive publishing credentials. Daily builds remain workflow artifacts.
 
-The repository owner must authorize the existing GitHub CLI's `workflow` scope before workflow-file pushes can succeed. Do not bypass a rejected workflow authorization or publish an untested tag to exercise releases.
+The runtime check encrypts and decodes synthetic VP8 frames without opening a display or network listener. Bundled NSS providers include their matching integrity files; relocation tests also remove a provider to verify that an incomplete payload fails. Plugin discovery alone does not prove encrypted media works.
 
 No project license has been selected. Bundled third-party components retain their licenses and accompanying source/notice obligations; packaging does not relicense them.

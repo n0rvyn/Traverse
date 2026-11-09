@@ -1,4 +1,20 @@
 {
-  "files": [".clang-format", ".gitignore", "CONTRIBUTING.md", "README.md", "requirements-test.txt", "docs/roadmap.md", "docs/future-terminal-mode.md"],
-  "directories": ["native", "web", "patches", "packaging", "tests", ".github"]
+  "files": [
+    ".clang-format",
+    ".gitignore",
+    "CONTRIBUTING.md",
+    "README.md",
+    "requirements-test.txt",
+    "docs/roadmap.md",
+    "docs/future-terminal-mode.md",
+    "docs/compatibility.md"
+  ],
+  "directories": [
+    "native",
+    "web",
+    "patches",
+    "packaging",
+    "tests",
+    ".github"
+  ]
 }

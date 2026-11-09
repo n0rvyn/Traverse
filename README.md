@@ -12,11 +12,11 @@ The runtime is native. Python is used only for development and test tooling. FD-
 
 ## Packages and CI
 
-DEB/RPM/portable build automation and guarded tag releases are being verified. See [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
+DEB/RPM/portable builds and installed-package CI now pass on x86_64 and arm64. See the [verified matrix](docs/compatibility.md); this does not establish every desktop/distribution combination. See [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
 
 ## Build from source
 
-A Linux development environment needs CMake, a C++17 compiler, GStreamer WebRTC/SDP development libraries, X11/XTest, OpenSSL, cpp-httplib with TLS and nlohmann JSON. Required plugins include unixfd, ximagesrc, videoconvert, VP8, RTP, libnice, DTLS, SRTP and SCTP. The tested media version is GStreamer1.26.11.
+A Linux development environment needs CMake, a C++17 compiler, GStreamer WebRTC/SDP and libsrtp2 development libraries, X11/XTest, OpenSSL, cpp-httplib with TLS and nlohmann JSON. Required plugins include unixfd, ximagesrc, videoconvert, VP8, RTP, libnice, DTLS, SRTP and SCTP. The tested media version is GStreamer 1.26.11 and the tested cpp-httplib version is 0.51.0. Distribution development packages can be older; the private-runtime recipe builds the declared versions.
 
 ```sh
 cmake -S native -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
