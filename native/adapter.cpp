@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "conversion_policy.hpp"
 #include <X11/Xlib.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -248,6 +249,7 @@ class Adapter {
                 };
                 auto *source = add("ximagesrc");
                 auto *convert = add("videoconvert");
+                g_object_set(convert, "n-threads", traverse::conversion_threads(), nullptr);
                 auto *filter = add("capsfilter");
                 auto *sink = add("unixfdsink");
                 g_object_set(source, "display-name", display.c_str(), "use-damage", FALSE,
