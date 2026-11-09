@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Require a matching version on main
+        id: gate
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git fetch origin main
+          sha=$(python3 packaging/release-policy.py "$RELEASE_TAG")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+  packages:
+    needs: gate
+    uses: ./.github/workflows/packages.yml
+    with:
+      source-ref: ${{ needs.gate.outputs.sha }}
+  publish:
+    needs: [gate, packages]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: packages-*
+          path: packages
+      - name: Verify and publish only this tag's tested artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          for folder in packages/*; do (cd "$folder" && sha256sum --check SHA256SUMS); done
+          mkdir release
+          find packages -type f ! -name SHA256SUMS -exec cp -n {} release/ \;
+          (cd release && sha256sum * > SHA256SUMS)
+          gh release create "$RELEASE_TAG" release/* --verify-tag --target "$RELEASE_SHA" --title "Traverse $RELEASE_TAG" --generate-notes

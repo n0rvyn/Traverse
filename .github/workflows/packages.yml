@@ -1,0 +1,45 @@
+name: Build Linux packages
+on:
+  workflow_call:
+    inputs:
+      source-ref:
+        type: string
+        default: ""
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Packages (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - name: Build on the declared glibc baseline
+        run: |
+          docker pull ubuntu:22.04
+          image=$(docker image inspect ubuntu:22.04 --format '{{index .RepoDigests 0}}')
+          docker run --rm -e BUILD_BASE_IMAGE="$image" -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" -v "$PWD:/src" -w /src "$image" bash packaging/build-runtime.sh
+      - name: Test actual installed DEB and relocated runtime
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src ubuntu:22.04 bash packaging/test-deb.sh
+      - name: Test actual installed RPM
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src fedora:44 bash packaging/test-rpm.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
