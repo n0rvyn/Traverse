@@ -1,9 +1,9 @@
 # Verified compatibility
 
-Package CI run: https://github.com/n0rvyn/Traverse/actions/runs/42623794268
-Source commit: `5b8b697fd2dd1f0dac37cc81ba139b0e5c9e62c0`.
+Package CI run: https://github.com/n0rvyn/Traverse/actions/runs/42711128425
+Source commit: `a99cec1b809a2019db19ddbe35fe5c07f1859aa8`.
 
-This run verifies private crypto providers/integrity files, encrypted VP8, incomplete-payload rejection, actual coturn authentication/ACL/datagrams and isolated unprivileged TLS443 permissions. It includes the standalone supervisor and video retransmission/source-identity regression checks, validated certificate rotation/rejection/expiry, supervisor status recovery and selected trust paths after helper environment clearing. Plugin presence alone is insufficient evidence of encrypted media or packet recovery.
+This run also verifies byte-identical conversion across thread counts and one-CPU affinity selection. It verifies private crypto providers/integrity files, encrypted VP8, incomplete-payload rejection, actual coturn authentication/ACL/datagrams and isolated unprivileged TLS443 permissions. It includes the standalone supervisor and video retransmission/source-identity regression checks, validated certificate rotation/rejection/expiry, supervisor status recovery and selected trust paths after helper environment clearing. Plugin presence alone is insufficient evidence of encrypted media or packet recovery.
 
 | Environment | Architecture | Actual evidence |
 |---|---|---|

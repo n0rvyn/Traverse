@@ -68,10 +68,12 @@ are small. The traced runs passed the full control and local Stop checks, at
 not precisely isolate tracing overhead from network variation.
 
 Chrome stats observed average jitter buffering of 22–30 ms and decoding of
-2.3–2.8 ms during these direct runs. The next experiment targets receiver
-buffering while checking drops, freezes and packet recovery. The standard
-receiver target influences a delay-versus-recovery tradeoff; no buffering default
-has been changed. See the [WebRTC receiver specification](https://www.w3.org/TR/webrtc/#dom-rtcrtpreceiver-jitterbuffertarget).
+2.3–2.8 ms during these direct runs. A later visible-Chrome experiment requested a zero receiver buffer target.
+Chrome accepted the value but measured buffering was 26.8 ms, compared with
+23.2–25.8 ms in controls. Median visible response was 107 ms, within the
+97–109 ms control range; every deliberately dropped packet received a fresh
+retransmission. This experiment found no speed benefit, so no receiver preference
+was added. The standard target influences a delay-versus-recovery tradeoff. See the [WebRTC receiver specification](https://www.w3.org/TR/webrtc/#dom-rtcrtpreceiver-jitterbuffertarget).
 
 Visible desktop Chrome156 independently passed the same eight control checks
 on the exact `5b8b697` package: 59.7 fps / 109 ms median over direct UDP and
@@ -79,3 +81,36 @@ on the exact `5b8b697` package: 59.7 fps / 109 ms median over direct UDP and
 Browser diagnostics identified Intel Iris graphics through ANGLE Metal and
 enabled GPU compositing. This confirms the desktop rendering path; it does not
 establish hardware VP8 decoding or physical input-to-photon latency.
+
+
+The `a99cec1` package passed both architecture CI suites and the full visible
+Chrome control path on the Gentoo host: 60.1 fps / 120 ms median visible response
+over direct UDP and 60.3 fps / 137 ms over TURN/TLS. Each median uses ten samples.
+The direct five-second stats window had no dropped frames or freezes; the relay
+window had no dropped frames and three freezes. Average FPS includes subsequent
+bursts and does not prove evenly spaced delivery. Local Stop released held Shift
+before browser close, stopped all owned sharing processes and restored the prior
+service. Certificate reload retained the same peer and advancing video.
+
+This package changes only the adapter payload compared with `752fe51`. On a
+process allowed at least two CPUs, the converter now uses a maximum of two
+workers; one CPU or an affinity-read failure retains one worker. The codec,
+bitrate, frame queue, dimensions and frame rate are unchanged. Native tests compare
+96 frame pairs across four packed RGB formats and three sizes, including odd
+I420 dimensions, repeated grayscale and changing color patterns. All active
+output pixels match between one and two conversion threads; padding is excluded.
+The one-CPU test changes only a disposable child's affinity.
+
+Fresh traced direct controls measured conversion medians of 3.84 and 3.83 ms
+(1,793 and 1,710 matched frames). The adapter-only candidate measured 2.49 ms
+(1,679 frames), with the actual BGRx-to-I420, 1280×720/60 profile retained. This
+is about 35% less conversion time, not 35% less remote-control latency. The
+candidate's visible response did not improve beyond control variation.
+
+Relay responsiveness remains variable. An earlier traced candidate run reached
+1,067 ms median visible response and four freezes; an unchanged-package relay
+control also failed the typing check with a duplicated character. Its TCP counters
+showed receiver-window limitation and a send queue reaching 310 KB while the host
+averaged 62% idle CPU. These observations do not establish the cause or attribute
+it to the conversion change. The later exact-package relay run above passed,
+but its lower median does not resolve the earlier stalls.
