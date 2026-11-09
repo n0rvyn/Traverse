@@ -39,5 +39,6 @@ cmake --build "$work/build-httplib" -j "${BUILD_JOBS:-2}"
 cmake --install "$work/build-httplib"
 cmake -S "$root/native" -B "$work/build-native" -G Ninja -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/traverse
 cmake --build "$work/build-native" -j "${BUILD_JOBS:-2}"
+ctest --test-dir "$work/build-native" --output-on-failure
 DESTDIR="$work/stage" cmake --install "$work/build-native"
 python3 "$root/packaging/package.py" --stage "$work/stage" --runtime "$prefix" --sources "$work/sources" --output "$root/dist"

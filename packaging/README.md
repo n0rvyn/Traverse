@@ -12,4 +12,6 @@ Stable publication requires `vX.Y.Z` matching the CMake version, with the exact 
 
 The runtime check encrypts and decodes synthetic VP8 frames without opening a display or network listener. Bundled NSS providers include their matching integrity files; relocation tests also remove a provider to verify that an incomplete payload fails. Plugin discovery alone does not prove encrypted media works.
 
+Native build checks also exercise an experimental shared TLS front end with real socket witnesses. The product launcher does not select or install that front end yet. The explicit `--internal-http` service mode accepts only numeric loopback bindings behind a TLS terminator; ordinary service launches still require HTTPS certificates. Service listeners use address reuse for restart and reject a second live listener on the same address/port.
+
 No project license has been selected. Bundled third-party components retain their licenses and accompanying source/notice obligations; packaging does not relicense them.

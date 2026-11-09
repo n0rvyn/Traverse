@@ -604,7 +604,13 @@ int main(int argc, char **argv) {
         Args args(argc, argv);
         guard_supervisor(args);
         auto cert = args.get("--cert"), key = args.get("--key"), origin = args.get("--origin");
-        if (cert.empty() || key.empty() || origin.empty())
+        const bool internal_http = args.has("--internal-http");
+        auto host = args.get("--host", internal_http ? "127.0.0.1" : "0.0.0.0");
+        if (internal_http && (host != "127.0.0.1" && host != "::1"))
+            throw std::runtime_error("Internal HTTP requires an explicit loopback address");
+        if (internal_http && origin.rfind("https://", 0) != 0)
+            throw std::runtime_error("Internal HTTP requires the public HTTPS origin");
+        if (origin.empty() || (!internal_http && (cert.empty() || key.empty())))
             throw std::runtime_error("Required: --cert FILE --key FILE --origin https://HOST:PORT");
         gst_init(nullptr, nullptr);
         std::signal(SIGINT, signal_stop);
@@ -616,23 +622,42 @@ int main(int argc, char **argv) {
                         std::stoi(args.get("--bitrate", "6000000")), args.has("--udp-only"),
                         client_ice_config(args.get("--ice-config"),
                                           args.get("--stun", "stun://stun.cloudflare.com:3478")));
-        httplib::SSLServer server(cert.c_str(), key.c_str());
-        if (!server.is_valid())
-            throw std::runtime_error("TLS certificate/key unavailable");
-        service.routes(server);
-        auto host = args.get("--host", "0.0.0.0");
+        std::unique_ptr<httplib::Server> server;
+        if (internal_http) {
+            server = std::make_unique<httplib::Server>();
+        } else {
+            auto tls = std::make_unique<httplib::SSLServer>(cert.c_str(), key.c_str());
+            if (!tls->is_valid())
+                throw std::runtime_error("TLS certificate/key unavailable");
+            server = std::move(tls);
+        }
+        // Rebind after our own TCP connections close, without sharing a live port.
+        // cpp-httplib's default chooses SO_REUSEPORT on Linux instead.
+        server->set_socket_options([](auto socket) {
+            int enabled = 1;
+            if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)))
+                throw std::runtime_error("Cannot configure exclusive service listener");
+        });
+        service.routes(*server);
         int port = std::stoi(args.get("--port", "8443"));
-        if (!server.bind_to_port(host, port))
-            throw std::runtime_error("Cannot bind HTTPS listener");
-        std::thread listener([&] { server.listen_after_bind(); });
-        std::cout << "Listening at " << origin << std::endl;
-        while (!stopping) {
+        if (!server->bind_to_port(host, port))
+            throw std::runtime_error("Cannot bind service listener");
+        std::atomic<bool> listener_failed{false};
+        std::thread listener([&] {
+            if (!server->listen_after_bind())
+                listener_failed = true;
+        });
+        std::cout << (internal_http ? "Internal HTTP backend for " : "Listening at ") << origin
+                  << std::endl;
+        while (!stopping && !listener_failed) {
             service.tick();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        server.stop();
+        server->stop();
         listener.join();
         service.drop();
+        if (listener_failed)
+            throw std::runtime_error("Service listener failed");
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "Service: " << e.what() << '\n';
