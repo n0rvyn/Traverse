@@ -22,6 +22,12 @@ capture, encoding, transport, decoding and callback scheduling; it excludes
 physical keyboard and monitor timing. Frame gaps describe spacing between video
 callbacks, rather than input response time.
 
+The exact `1af36a9` CI portable artifact subsequently passed the same full Chrome
+control checks over both paths: 60.0/58.3 decoded fps and 125/156 ms median visible
+response for direct/relay, respectively. Each median uses 10 samples. Its local
+Stop sharing released a held Shift key before Chrome closed and stopped all
+owned sharing processes.
+
 The earlier `5de5721` runtime did not negotiate generic NACK/RTX recovery. Known
 single-packet drops produced frame gaps between 233 and 767 ms across four traces.
 The recovery change negotiates retransmission and fixes each peer's video source
