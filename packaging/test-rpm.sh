@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-dnf install -y python3 /src/dist/*.rpm
+dnf install -y python3 openssl /src/dist/*.rpm
 traverse --check-runtime
 python3 /src/tests/installed_turn.py
 python3 /src/tests/bind_helper_test.py
