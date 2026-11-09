@@ -1,8 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -18,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <thread>
@@ -77,6 +80,13 @@ struct Args {
         return values.count(k) > 0;
     }
 };
+inline void guard_supervisor(const Args &args) {
+    if (args.has("--supervisor-pid")) {
+        auto parent = static_cast<pid_t>(std::stol(args.get("--supervisor-pid")));
+        if (parent <= 1 || prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != parent)
+            throw std::runtime_error("Supervisor exited before startup");
+    }
+}
 inline std::string default_socket() {
     return "/run/user/" + std::to_string(getuid()) + "/traverse/adapter.sock";
 }

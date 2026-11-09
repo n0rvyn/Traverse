@@ -21,7 +21,7 @@ if [ "$command" = traverse ]; then
     --check-runtime) shift; exec "$prefix/libexec/traverse/traverse-runtime-check" "$@" ;;
     adapter) shift; command=traverse-adapter ;;
     service) shift; command=traverse-service ;;
-    *) printf '%s\n' 'Traverse native desktop sharing' 'Usage: traverse --check-runtime | adapter OPTIONS | service OPTIONS' 'HTTPS/domain configuration and the desktop launcher are under development.'; exit 0 ;;
+    *) command=traverse-launcher ;;
   esac
 fi
 exec "$prefix/libexec/traverse/$command" "$@"

@@ -10,6 +10,10 @@ An adapter captures an existing desktop and guards authorized input. A separate 
 
 The runtime is native. Python is used only for development and test tooling. FD-backed pixel transport preserves the adapter/service boundary; it is not a blanket zero-copy claim.
 
+## Packages and CI
+
+DEB/RPM/portable build automation and guarded tag releases are being verified. See [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
+
 ## Build from source
 
 A Linux development environment needs CMake, a C++17 compiler, GStreamer WebRTC/SDP development libraries, X11/XTest, OpenSSL, cpp-httplib with TLS and nlohmann JSON. Required plugins include unixfd, ximagesrc, videoconvert, VP8, RTP, libnice, DTLS, SRTP and SCTP. The tested media version is GStreamer1.26.11.

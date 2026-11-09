@@ -331,6 +331,7 @@ int main(int argc, char **argv) {
     try {
         XInitThreads();
         Args args(argc, argv);
+        guard_supervisor(args);
         auto name = args.get("--display", getenv("DISPLAY") ? getenv("DISPLAY") : ":0");
         if (args.has("--local-dialog")) {
             // Preserve the death signal across exec; also cover death before this helper starts.

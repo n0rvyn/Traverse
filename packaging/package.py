@@ -60,6 +60,22 @@ def collect_dependencies(elf, libdir, env, origins=None):
     return copied
 
 
+def distribution_owners(source):
+    # Ubuntu's merged-/usr loader paths and dpkg paths can name the same file differently.
+    original=Path(source)
+    candidates=[original,original.resolve()]
+    for path in list(candidates):
+        value=str(path)
+        for before,after in [('/lib/','/usr/lib/'),('/usr/lib/','/lib/'),('/bin/','/usr/bin/'),('/usr/bin/','/bin/')]:
+            if value.startswith(before):candidates.append(Path(after+value[len(before):]))
+    for candidate in dict.fromkeys(candidates):
+        if not candidate.exists() or not os.path.samefile(original,candidate):continue
+        try:
+            return {line.rsplit(': ',1)[0] for line in run(['dpkg-query','-S',candidate],stderr=subprocess.DEVNULL).splitlines()}
+        except subprocess.CalledProcessError:pass
+    raise ValueError('Cannot identify source/notice owner for '+str(source))
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--stage',type=Path,required=True);parser.add_argument('--runtime',type=Path,required=True);parser.add_argument('--sources',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();stage=args.stage.resolve();runtime=args.runtime.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
@@ -105,11 +121,7 @@ def main():
     packages=set()
     for source in sorted(origins):
         if Path(source).is_relative_to(runtime):continue
-        try:
-            for line in run(['dpkg-query','-S',source],stderr=subprocess.DEVNULL).splitlines():
-                packages.add(line.rsplit(': ',1)[0])
-        except subprocess.CalledProcessError:
-            raise ValueError('Cannot identify source/notice owner for '+source)
+        packages.update(distribution_owners(source))
     packages.add('x11-utils')
     for package in sorted(packages):
         source=Path('/usr/share/doc')/package.split(':')[0]/'copyright'

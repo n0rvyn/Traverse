@@ -602,6 +602,7 @@ class Service {
 int main(int argc, char **argv) {
     try {
         Args args(argc, argv);
+        guard_supervisor(args);
         auto cert = args.get("--cert"), key = args.get("--key"), origin = args.get("--origin");
         if (cert.empty() || key.empty() || origin.empty())
             throw std::runtime_error("Required: --cert FILE --key FILE --origin https://HOST:PORT");

@@ -12,5 +12,6 @@ tar -xf "$archive" -C /tmp/relocated
 # The default adapter must show its real Stop sharing dialog, and release on local activation.
 gcc /src/tests/x11_input_probe.c -o /tmp/x11-probe -lX11 -lXtst
 xvfb-run -a python3 /src/tests/installed_dialog.py
+xvfb-run -a python3 /src/tests/installed_launcher.py
 apt-get remove -y traverse
 test ! -e /opt/traverse/libexec/traverse/traverse-service
