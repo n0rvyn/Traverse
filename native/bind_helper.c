@@ -30,10 +30,16 @@ static void trusted(const char *path, int directory) {
 }
 static int visit(const char *path, const struct stat *st, int type, struct FTW *where) {
     (void)where;
-    if (!st || (type != FTW_F && type != FTW_D) || st->st_uid != 0 ||
-        (st->st_mode & 0022) || (!S_ISREG(st->st_mode) && !S_ISDIR(st->st_mode)))
-        fail("Private runtime contains an untrusted file or link");
-    (void)path;
+    if (!st || (type != FTW_F && type != FTW_D)) {
+        fprintf(stderr, "Traverse binding helper: Cannot inspect runtime entry: %s (type %d)\n", path, type);
+        exit(1);
+    }
+    if (st->st_uid != 0 || (st->st_mode & 0022) ||
+        (!S_ISREG(st->st_mode) && !S_ISDIR(st->st_mode))) {
+        fprintf(stderr, "Traverse binding helper: Untrusted runtime entry: %s (uid %lu, mode %04o)\n",
+                path, (unsigned long)st->st_uid, (unsigned)(st->st_mode & 07777));
+        exit(1);
+    }
     return 0;
 }
 static void value(const char *name, const char *text) {
