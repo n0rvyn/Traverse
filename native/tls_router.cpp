@@ -109,7 +109,7 @@ int alpn(SSL *, const unsigned char **out, unsigned char *outlen, const unsigned
 
 struct TlsRouter::Impl {
     TlsRouterConfig config;
-    std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context{nullptr, SSL_CTX_free};
+    std::unique_ptr<TlsCertificates> certificates;
     Socket listener;
     std::atomic<bool> stopped{false};
     unsigned short bound_port = 0;
@@ -123,14 +123,10 @@ struct TlsRouter::Impl {
     explicit Impl(const TlsRouterConfig &settings) : config(settings) {
         if (!config.http_port || !config.turn_port)
             throw std::runtime_error("Backend ports required");
-        context.reset(SSL_CTX_new(TLS_server_method()));
-        if (!context || !SSL_CTX_set_min_proto_version(context.get(), TLS1_2_VERSION) ||
-            SSL_CTX_use_certificate_chain_file(context.get(), config.certificate.c_str()) != 1 ||
-            SSL_CTX_use_PrivateKey_file(context.get(), config.private_key.c_str(),
-                                        SSL_FILETYPE_PEM) != 1 ||
-            SSL_CTX_check_private_key(context.get()) != 1)
-            throw std::runtime_error("TLS certificate/key unavailable");
-        SSL_CTX_set_alpn_select_cb(context.get(), alpn, nullptr);
+        certificates = std::make_unique<TlsCertificates>(
+            TlsCertificateConfig{config.certificate, config.private_key, config.expected_host,
+                                 config.ca_file, config.ca_directory},
+            [](SSL_CTX *context) { SSL_CTX_set_alpn_select_cb(context, alpn, nullptr); });
         sockaddr_storage storage{};
         auto *v4 = reinterpret_cast<sockaddr_in *>(&storage);
         auto *v6 = reinterpret_cast<sockaddr_in6 *>(&storage);
@@ -223,15 +219,23 @@ struct TlsRouter::Impl {
     }
     void serve(Connection &connection) {
         auto deadline = Clock::now() + std::chrono::seconds(10);
-        std::unique_ptr<SSL, decltype(&SSL_free)> ssl(SSL_new(context.get()), SSL_free);
+        auto certificate = certificates->context();
+        if (!certificate)
+            return;
+        std::unique_ptr<SSL, decltype(&SSL_free)> ssl(SSL_new(certificate->ssl.get()), SSL_free);
         if (!ssl || SSL_set_fd(ssl.get(), connection.front.fd) != 1)
             return;
         SSL_set_mode(ssl.get(),
                      SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         while (!stopped) {
+            if (!certificate->valid_now())
+                return;
             int result = SSL_accept(ssl.get());
-            if (result == 1)
+            if (result == 1) {
+                if (!certificate->valid_now())
+                    return;
                 break;
+            }
             int error = SSL_get_error(ssl.get(), result);
             if (!retryable(error) ||
                 !wait_for(connection.front.fd, ssl_wait(error), deadline, stopped))
@@ -365,5 +369,11 @@ unsigned short TlsRouter::port() const {
 }
 void TlsRouter::stop() {
     impl->stop();
+}
+bool TlsRouter::refresh_certificate(bool force) {
+    return impl->certificates->refresh(force);
+}
+TlsCertificateStatus TlsRouter::certificate_status() const {
+    return impl->certificates->status();
 }
 } // namespace traverse

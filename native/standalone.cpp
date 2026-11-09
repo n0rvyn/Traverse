@@ -1,6 +1,8 @@
 #include "standalone.hpp"
 #include "child.hpp"
+#include "tls_certificate.hpp"
 #include <arpa/inet.h>
+#include <ctime>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <openssl/ssl.h>
@@ -82,6 +84,43 @@ class Sharing {
         if (frontend) frontend->stop();
         if (service) service->stop();
         if (turn) turn->stop();
+    }
+};
+class CertificateObserver {
+    std::optional<TlsCertificateStatus> previous;
+    std::string metadata_error;
+
+  public:
+    void observe(const std::string &path, pid_t frontend) {
+        try {
+            auto current = read_tls_certificate_status(path, frontend);
+            if (!metadata_error.empty())
+                std::cerr << "Traverse certificate: status restored\n";
+            metadata_error.clear();
+            if (!current.available) {
+                if (!previous || previous->available) {
+                    auto now = std::time(nullptr);
+                    auto reason = now == static_cast<std::time_t>(-1) ? "unavailable" :
+                        now >= current.valid_until ? "expired" :
+                        now < current.valid_from ? "not yet valid" : "unavailable";
+                    std::cerr << "Traverse certificate: " << reason
+                              << "; new connections unavailable\n";
+                }
+            } else if (!previous || !previous->available) {
+                std::cerr << "Traverse certificate: available\n";
+            } else if (current.fingerprint != previous->fingerprint) {
+                std::cerr << "Traverse certificate: renewed; sharing continues\n";
+            } else if (current.error.empty() && !previous->error.empty()) {
+                std::cerr << "Traverse certificate: renewal recovered; sharing continues\n";
+            }
+            if (!current.error.empty() && (!previous || current.error != previous->error))
+                std::cerr << "Traverse certificate: renewal rejected: " << current.error << '\n';
+            previous = std::move(current);
+        } catch (const std::exception &error) {
+            if (metadata_error != error.what())
+                std::cerr << "Traverse certificate: status unavailable: " << error.what() << '\n';
+            metadata_error = error.what();
+        }
     }
 };
 std::set<std::string> relay_addresses() {
@@ -268,12 +307,40 @@ int standalone(const EndpointSettings &settings, const std::filesystem::path &bi
                     (settings.base_path == "/" ? "" : settings.base_path);
     if (children.service->ready_line() != expected)
         throw std::runtime_error("Internal HTTP service readiness response invalid");
-    children.frontend = start("frontend", "traverse-tls-frontend",
+    std::vector<std::string> frontend_arguments =
         {"--host", settings.listen_address, "--port", std::to_string(settings.port),
          "--http-port", std::to_string(http.port), "--turn-port", std::to_string(turn.port),
-         "--cert", settings.certificate, "--key", settings.private_key});
+         "--cert", settings.certificate, "--key", settings.private_key,
+         "--expected-domain", settings.domain,
+         "--status-file", (files.directory / "tls-status.json").string()};
+    // The binding helper intentionally clears environment and changes cwd. Carry
+    // only the caller's selected trust locations as explicit, absolute arguments.
+    if (const char *file = getenv("SSL_CERT_FILE")) {
+        frontend_arguments.insert(frontend_arguments.end(), {"--trust-file",
+            *file ? std::filesystem::absolute(file).lexically_normal().string() : ""});
+    }
+    if (const char *directory = getenv("SSL_CERT_DIR")) {
+        std::string resolved, paths(directory);
+        size_t begin = 0;
+        while (true) {
+            auto end = paths.find(':', begin);
+            auto path = paths.substr(begin, end == std::string::npos ? end : end - begin);
+            if (!path.empty()) resolved += std::filesystem::absolute(path).lexically_normal().string();
+            if (end == std::string::npos) break;
+            resolved += ':';
+            begin = end + 1;
+        }
+        frontend_arguments.insert(frontend_arguments.end(), {"--trust-directory", resolved});
+    }
+    children.frontend = start("frontend", "traverse-tls-frontend", frontend_arguments);
     if (json::parse(children.frontend->ready_line()).value("port", 0) != settings.port)
         throw std::runtime_error("TLS listener readiness response invalid");
+    CertificateObserver certificate_observer;
+    auto certificate_status = (files.directory / "tls-status.json").string();
+    // The child has published its initial owned snapshot before readiness. An
+    // invalid initial producer cannot establish a ready configured endpoint.
+    read_tls_certificate_status(certificate_status, children.frontend->id());
+    certificate_observer.observe(certificate_status, children.frontend->id());
     deadline = Clock::now() + std::chrono::seconds(15);
     ready = false;
     while (!stopping && Clock::now() < deadline) {
@@ -287,6 +354,7 @@ int standalone(const EndpointSettings &settings, const std::filesystem::path &bi
                  "Use the local pairing dialog to connect; press Ctrl+C to stop.\n" << std::flush;
     while (!stopping) {
         children.check();
+        certificate_observer.observe(certificate_status, children.frontend->id());
         auto state = ipc.call("/state");
         if (state.value("pid", pid_t{-1}) != children.adapter->id())
             throw std::runtime_error("Desktop adapter ownership changed");

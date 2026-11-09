@@ -4,8 +4,10 @@ Root is the test observer only. Every app process runs as UID/GID 65534.
 The caller must provide an isolated network namespace with low-port threshold1024.
 """
 import contextlib
+import http.client
 import json
 import os
+import signal
 from pathlib import Path
 import socket
 import ssl
@@ -92,6 +94,10 @@ def main():
         cert, key = directory/'certificate.pem', directory/'key.pem'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+                        '-addext', 'basicConstraints=critical,CA:TRUE',
+                        '-addext', 'keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign',
+                        '-addext', 'subjectKeyIdentifier=hash',
+                        '-addext', 'authorityKeyIdentifier=keyid:always',
                         '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
         os.chown(key, UID, GID);key.chmod(0o600)
         hostile = dict(os.environ, HOME=str(directory), XDG_RUNTIME_DIR=str(runtime),
@@ -101,7 +107,9 @@ def main():
                        GST_PLUGIN_SCANNER=str(directory/'scanner'), GST_PLUGIN_SCANNER_1_0=str(directory/'scanner'),
                        GST_REGISTRY=str(directory/'evil-registry'), GST_REGISTRY_1_0=str(directory/'evil-registry'),
                        GST_REGISTRY_UPDATE='yes', OPENSSL_CONF=str(directory/'evil-openssl.cnf'),
-                       OPENSSL_MODULES=str(directory), GIO_EXTRA_MODULES=str(directory))
+                       OPENSSL_MODULES=str(directory), GIO_EXTRA_MODULES=str(directory),
+                       SSL_CERT_FILE=str(directory/'evil-trust.pem'),
+                       SSL_CERT_DIR=str(directory/'evil-trust-directory'))
         (directory/'evil-registry').write_bytes(b'Untrusted registry must not be read')
         (directory/'evil-openssl.cnf').write_text('invalid OpenSSL configuration')
         rejected('/bin/sh', [], hostile)
@@ -142,12 +150,15 @@ def main():
             assert actual_env[b'HOME'] == bytes(PREFIX)
             for name in ['DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS']:
                 assert name.encode() not in actual_env
-            for name in ['LD_PRELOAD', 'OPENSSL_CONF', 'OPENSSL_MODULES', 'GIO_EXTRA_MODULES']:
+            for name in ['LD_PRELOAD', 'OPENSSL_CONF', 'OPENSSL_MODULES', 'GIO_EXTRA_MODULES',
+                         'SSL_CERT_FILE', 'SSL_CERT_DIR']:
                 assert name.encode() not in actual_env
             maps = Path(f'/proc/{service.pid}/maps').read_text()
             assert str(PREFIX/'lib/libgstwebrtc') in maps and str(PREFIX/'lib/gstreamer-1.0/libgstvpx') in maps
             frontend_args = ['--host', '127.0.0.1', '--port', '443', '--http-port', str(backend),
-                             '--turn-port', str(port()), '--cert', str(cert), '--key', str(key)]
+                             '--turn-port', str(port()), '--cert', str(cert), '--key', str(key),
+                             '--expected-domain', 'localhost', '--trust-file', str(cert),
+                             '--trust-directory', '', '--status-file', str(runtime/'tls-status.json')]
             with running('frontend', frontend_args, directory, hostile) as frontend:
                 context = ssl.create_default_context(cafile=str(cert))
                 deadline = time.monotonic()+10
@@ -163,10 +174,38 @@ def main():
                 with stream:
                     # A live TLS worker must inherit zero caps, not its pre-bind parent state.
                     stream.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n')
-                    assert b'200 OK' in stream.recv(4096)
+                    response = http.client.HTTPResponse(stream);response.begin()
+                    assert response.status == 200
+                    response.read();response.close()
                     frontend_threads = verify_threads(frontend.pid, 0)
                     assert frontend_threads >= 3
+                    snapshot = json.loads((runtime/'tls-status.json').read_text())
+                    assert snapshot['frontendPid'] == frontend.pid and snapshot['available']
+                    assert (runtime/'tls-status.json').stat().st_uid == UID
+                    assert (runtime/'tls-status.json').stat().st_mode & 0o777 == 0o600
+                    descriptor = os.pidfd_open(frontend.pid)
+                    try:signal.pidfd_send_signal(descriptor, signal.SIGHUP)
+                    finally:os.close(descriptor)
+                    deadline = time.monotonic()+5
+                    while json.loads((runtime/'tls-status.json').read_text())['revision'] <= snapshot['revision']:
+                        assert time.monotonic()<deadline, 'Low-port frontend ignored certificate refresh'
+                        time.sleep(.02)
+                    stream.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n')
+                    response = http.client.HTTPResponse(stream);response.begin()
+                    assert response.status == 200
+                    response.read();response.close()
+                    verify_threads(frontend.pid, 0)
+                    frontend_env = dict(item.split(b'=', 1) for item in Path(f'/proc/{frontend.pid}/environ').read_bytes().split(b'\0') if item)
+                    for name in ['SSL_CERT_FILE', 'SSL_CERT_DIR', 'OPENSSL_CONF', 'OPENSSL_MODULES', 'LD_PRELOAD']:
+                        assert name.encode() not in frontend_env
                     verify_threads(service.pid, BIND)
+                    missing_trust = list(frontend_args)
+                    missing_trust[missing_trust.index('--trust-file')+1] = str(directory/'absent-ca.pem')
+                    rejected_trust = subprocess.run([str(HELPER), 'frontend', *missing_trust,
+                        '--supervisor-pid', str(os.getpid())], capture_output=True, text=True,
+                        timeout=10, **child_options(hostile))
+                    assert rejected_trust.returncode and 'Configured certificate trust file unavailable' in rejected_trust.stderr
+                    assert frontend.poll() is None
                     duplicate = subprocess.run([str(HELPER), 'frontend', *frontend_args,
                                                 '--supervisor-pid', str(os.getpid())],
                                                capture_output=True, text=True, timeout=10, **child_options(hostile))
@@ -178,6 +217,8 @@ def main():
                           'frontendTcp443': 'TLS + real HTTP', 'frontendThreadsWithoutCaps': frontend_threads,
                           'serviceThreadsWithOnlyBind': service_threads, 'hostileEnvironmentIgnored': True,
                           'untrustedFilesAndMissingCapabilityRejected': True,
+                          'explicitTrustSurvivesClearedEnvironment': True,
+                          'certificateRefreshPreservesExistingTlsAndZeroCaps': True,
                           'boundingSet': 'inherited kernel bound; NoNewPrivs=1 prevents exec privilege gains'}))
 
 
