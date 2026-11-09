@@ -60,7 +60,8 @@
     "xmessage",
     "gst-plugin-scanner",
     "turnserver",
-    "traverse-tls-frontend"
+    "traverse-tls-frontend",
+    "traverse-bind-helper"
   ],
   "host_dependencies": [
     "Linux glibc >= 2.35",

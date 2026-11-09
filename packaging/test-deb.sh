@@ -6,6 +6,10 @@ apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-bas
 apt-get install -y /src/dist/*.deb
 traverse --check-runtime
 python3 /src/tests/installed_turn.py
+python3 /src/tests/bind_helper_test.py
+apt-get install -y --reinstall /src/dist/*.deb
+test "$(getcap /opt/traverse/libexec/traverse/traverse-bind-helper)" = '/opt/traverse/libexec/traverse/traverse-bind-helper cap_net_bind_service=ep'
+test "$(stat -c '%u:%g:%a' /opt/traverse/share/traverse/registry.bin)" = '0:0:644'
 mkdir -p /tmp/relocated
 archive=$(find /src/dist -maxdepth 1 -name "traverse-*-$(uname -m).tar.gz" -print -quit)
 tar -xf "$archive" -C /tmp/relocated
@@ -30,3 +34,4 @@ xvfb-run -a python3 /src/tests/installed_dialog.py
 xvfb-run -a python3 /src/tests/installed_launcher.py
 apt-get remove -y traverse
 test ! -e /opt/traverse/libexec/traverse/traverse-service
+test ! -e /opt/traverse/share/traverse/registry.bin

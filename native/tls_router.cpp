@@ -1,4 +1,5 @@
 #include "tls_router.hpp"
+#include "bind_privilege.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <array>
@@ -146,6 +147,7 @@ struct TlsRouter::Impl {
         if (getsockname(listener.fd, reinterpret_cast<sockaddr *>(&address), &size))
             throw std::runtime_error("Cannot inspect TLS listener");
         bound_port = ntohs(address.sin_port);
+        drop_bind_privilege();
         acceptor = std::thread([this] { accept_loop(); });
     }
     ~Impl() {

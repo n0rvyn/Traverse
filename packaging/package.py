@@ -88,6 +88,8 @@ def main():
     helpers=prefix/'libexec/traverse';helpers.mkdir(parents=True,exist_ok=True)
     shutil.copy2('/usr/bin/xmessage',helpers/'xmessage')
     shutil.copy2(runtime/'bin/turnserver',helpers/'turnserver')
+    shutil.copy2(ROOT/'packaging/configure-runtime.sh',helpers/'configure-runtime')
+    (helpers/'configure-runtime').chmod(0o755)
     scanner=runtime/'libexec/gstreamer-1.0/gst-plugin-scanner'
     scanner_dest=prefix/'libexec/gstreamer-1.0/gst-plugin-scanner';scanner_dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(scanner,scanner_dest)
     plugins=libdir/'gstreamer-1.0';plugins.mkdir()
@@ -167,11 +169,20 @@ def main():
     with portable.open('wb') as raw, gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=epoch) as compressed, tarfile.open(fileobj=compressed,mode='w') as archive:
         archive.add(prefix,arcname='traverse',filter=normalize)
     control=stage/'DEBIAN';control.mkdir()
-    (control/'control').write_text(f'Package: traverse\nVersion: {version}\nArchitecture: {arch[0]}\nMaintainer: Traverse project\nDepends: libc6 (>= 2.35), ca-certificates\nDescription: Native existing-session Linux desktop sharing in Chrome\n')
+    (control/'control').write_text(f'Package: traverse\nVersion: {version}\nArchitecture: {arch[0]}\nMaintainer: Traverse project\nDepends: libc6 (>= 2.35), ca-certificates, libcap2-bin\nDescription: Native existing-session Linux desktop sharing in Chrome\n')
+    for action in ['postinst','postrm']:
+        shutil.copy2(ROOT/f'packaging/deb-{action}.sh',control/action)
+        (control/action).chmod(0o755)
     subprocess.run(['dpkg-deb','--root-owner-group','--build',str(stage),str(out/f'traverse_{version}_{arch[0]}.deb')],check=True)
     shutil.rmtree(control)
     rpmroot=out/'rpm-build';rpmroot.mkdir()
     spec=rpmroot/'traverse.spec'
+    rpm_files=[]
+    for path in sorted(prefix.rglob('*')):
+        attribute='%dir ' if path.is_dir() else '%caps(cap_net_bind_service=ep) ' if path==helpers/'traverse-bind-helper' else ''
+        rpm_files.append(attribute+'/'+str(path.relative_to(stage)))
+    rpm_files.insert(0,'%dir /opt/traverse')
+    rpm_files.append('%ghost %attr(0644,root,root) /opt/traverse/share/traverse/registry.bin')
     spec.write_text(f'''Name: traverse
 Version: {version}
 Release: 1
@@ -179,14 +190,18 @@ Summary: Native existing-session Linux desktop sharing in Chrome
 License: LicenseRef-Not-Specified
 BuildArch: {arch[1]}
 AutoReqProv: no
-Requires: glibc >= 2.35, ca-certificates
+Requires: glibc >= 2.35, ca-certificates, libcap
 %description
 Native existing-session Linux desktop sharing. Project license not yet selected.
 %install
 mkdir -p %{{buildroot}}
 cp -a {stage}/opt {stage}/usr %{{buildroot}}/
+%post
+/opt/traverse/libexec/traverse/configure-runtime
+%postun
+if [ "$1" = 0 ]; then rm -f /opt/traverse/share/traverse/registry.bin; fi
 %files
-/opt/traverse
+{chr(10).join(rpm_files)}
 /usr/bin/traverse
 /usr/bin/traverse-adapter
 /usr/bin/traverse-service

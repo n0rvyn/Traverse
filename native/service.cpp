@@ -633,6 +633,15 @@ int main(int argc, char **argv) {
         auto base_path =
             traverse::EndpointSettings::normalize_base_path(args.get("--base-path", "/"));
         gst_init(nullptr, nullptr);
+        // Load the real peer plugins before advertising a ready endpoint. The
+        // low-port path uses only the installed, root-owned plugin registry.
+        for (const char *name : {"unixfdsrc", "queue", "vp8enc", "rtpvp8pay", "webrtcbin",
+                                 "nicesrc", "dtlsenc", "srtpenc", "sctpenc"}) {
+            auto *element = gst_element_factory_make(name, nullptr);
+            if (!element)
+                throw std::runtime_error(std::string("Required media plugin unavailable: ") + name);
+            gst_object_unref(element);
+        }
         std::signal(SIGINT, signal_stop);
         std::signal(SIGTERM, signal_stop);
         std::signal(SIGPIPE, SIG_IGN);
