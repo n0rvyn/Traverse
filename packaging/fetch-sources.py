@@ -9,14 +9,27 @@ import tarfile
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def safe_extract(archive, target):
+def safe_extract(archive, target, exclude_paths=()):
+    exclusions = []
+    for name in exclude_paths:
+        path = Path(name)
+        if path.is_absolute() or not path.parts or '..' in path.parts:
+            raise ValueError('Unsafe source exclusion')
+        exclusions.append(path.parts)
     with tarfile.open(archive) as tar:
         members = tar.getmembers()
+        selected = []
         for member in members:
             path = Path(member.name)
-            if path.is_absolute() or '..' in path.parts or member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+            if path.is_absolute() or '..' in path.parts:
                 raise ValueError('Unsafe source archive member: '+member.name)
-        tar.extractall(target, members=members)
+            relative = path.parts[1:]
+            if any(relative[:len(exclusion)] == exclusion for exclusion in exclusions):
+                continue
+            if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                raise ValueError('Unsafe source archive member: '+member.name)
+            selected.append(member)
+        tar.extractall(target, members=selected)
 
 
 def main():
@@ -32,7 +45,7 @@ def main():
         if target.exists():
             raise ValueError('Refusing to reuse an extracted source tree: '+str(target))
         unpack = dest/(source['name']+'-extract'); unpack.mkdir()
-        safe_extract(archive, unpack)
+        safe_extract(archive, unpack, source.get('build_exclude_paths', ()))
         roots = list(unpack.iterdir())
         if len(roots)!=1 or not roots[0].is_dir():
             raise ValueError('Expected one source root: '+source['name'])

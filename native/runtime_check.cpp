@@ -1,14 +1,114 @@
 #include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <gst/gst.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <openssl/rand.h>
+#include <poll.h>
+#include <spawn.h>
 #include <srtp2/srtp.h>
+#include <sys/wait.h>
+#include <unistd.h>
 using json = nlohmann::json;
+extern char **environ;
 
-static bool provider_assets(json &result) {
+static bool turn_version(const std::filesystem::path &binary, const std::string &expected,
+                         json &result) {
+    int descriptors[2];
+    if (pipe2(descriptors, O_CLOEXEC | O_NONBLOCK))
+        throw std::runtime_error("Cannot create runtime check pipe");
+    // Closed standard streams must not collide with the child's dup2/close actions.
+    int pipe[2] = {fcntl(descriptors[0], F_DUPFD_CLOEXEC, 3),
+                   fcntl(descriptors[1], F_DUPFD_CLOEXEC, 3)};
+    close(descriptors[0]);
+    close(descriptors[1]);
+    if (pipe[0] < 0 || pipe[1] < 0) {
+        if (pipe[0] >= 0) close(pipe[0]);
+        if (pipe[1] >= 0) close(pipe[1]);
+        throw std::runtime_error("Cannot reserve runtime check descriptors");
+    }
+    posix_spawn_file_actions_t actions;
+    int action_error = posix_spawn_file_actions_init(&actions);
+    if (action_error) {
+        close(pipe[0]);
+        close(pipe[1]);
+        throw std::runtime_error("Cannot prepare runtime check child");
+    }
+    action_error = posix_spawn_file_actions_adddup2(&actions, pipe[1], STDOUT_FILENO);
+    if (!action_error)
+        action_error = posix_spawn_file_actions_adddup2(&actions, pipe[1], STDERR_FILENO);
+    if (!action_error)
+        action_error = posix_spawn_file_actions_addclose(&actions, pipe[0]);
+    if (!action_error)
+        action_error = posix_spawn_file_actions_addclose(&actions, pipe[1]);
+    if (action_error) {
+        posix_spawn_file_actions_destroy(&actions);
+        close(pipe[0]);
+        close(pipe[1]);
+        throw std::runtime_error("Cannot prepare runtime check output");
+    }
+    auto path = binary.string();
+    char option[] = "--version";
+    char *arguments[] = {path.data(), option, nullptr};
+    pid_t child = -1;
+    int error = posix_spawn(&child, path.c_str(), &actions, nullptr, arguments, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(pipe[1]);
+    if (error) {
+        close(pipe[0]);
+        result["error"] = "Cannot execute bundled TURN server";
+        return false;
+    }
+    std::string output;
+    int status = 0;
+    bool reaped = false, eof = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        pollfd item{pipe[0], POLLIN, 0};
+        int ready = poll(&item, 1, 100);
+        if (ready > 0) {
+            char bytes[1024];
+            ssize_t count;
+            while ((count = read(pipe[0], bytes, sizeof(bytes))) > 0)
+                output.append(bytes, count);
+            if (count == 0)
+                eof = true;
+        } else if (ready < 0 && errno != EINTR)
+            break;
+        if (!reaped && waitpid(child, &status, WNOHANG) == child)
+            reaped = true;
+        if (reaped && eof)
+            break;
+    }
+    close(pipe[0]);
+    if (!reaped) {
+        kill(child, SIGKILL);
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+        result["error"] = "Bundled TURN version check did not finish";
+        return false;
+    }
+    if (!eof) {
+        result["error"] = "Bundled TURN version output did not close";
+        return false;
+    }
+    auto first = output.find_first_not_of(" \r\n\t"), last = output.find_last_not_of(" \r\n\t");
+    auto version =
+        first == std::string::npos ? std::string{} : output.substr(first, last - first + 1);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) || version != expected) {
+        result["error"] = "Bundled TURN server could not report its required version";
+        return false;
+    }
+    result["turnServerVersion"] = version;
+    return true;
+}
+
+static bool bundled_assets(json &result) {
     const char *prefix = getenv("TRAVERSE_RUNTIME_PREFIX");
     if (!prefix)
         return true; // Unbundled development builds still test the actual crypto path.
@@ -18,6 +118,17 @@ static bool provider_assets(json &result) {
         return false;
     }
     auto manifest = json::parse(file);
+    for (const auto &entry : manifest.value("runtime_executables", json::array())) {
+        auto name = entry.get<std::string>();
+        if (name.empty() || std::filesystem::path(name).filename() != name || name == "..")
+            throw std::runtime_error("Invalid runtime executable name");
+        auto path = std::filesystem::path(prefix) / "libexec" /
+                    (name == "gst-plugin-scanner" ? "gstreamer-1.0" : "traverse") / name;
+        if (!std::filesystem::is_regular_file(path) || access(path.c_str(), X_OK)) {
+            result["error"] = "Private runtime executable is missing: " + name;
+            return false;
+        }
+    }
     for (const auto &entry : manifest.value("dynamicProviderAssets", json::array())) {
         auto path = std::filesystem::path(entry.get<std::string>());
         if (path.is_absolute() || path.string().find("..") != std::string::npos ||
@@ -25,6 +136,12 @@ static bool provider_assets(json &result) {
             result["error"] = "Private crypto provider asset is missing: " + path.string();
             return false;
         }
+    }
+    for (const auto &source : manifest.at("sources")) {
+        if (source.at("name") == "coturn" &&
+            !turn_version(std::filesystem::path(prefix) / "libexec/traverse/turnserver",
+                          source.at("version").get<std::string>(), result))
+            return false;
     }
     return true;
 }
@@ -104,7 +221,7 @@ static bool media_roundtrip(json &result) {
 int main(int argc, char **argv) {
     json result = {{"plugins", json::object()}};
     try {
-        if (!provider_assets(result)) {
+        if (!bundled_assets(result)) {
             result["ok"] = false;
             std::cout << result.dump(2) << '\n';
             return 1;

@@ -1,4 +1,5 @@
 """Real HTTP boundaries for the explicit TLS-front-end backend mode."""
+import http.client
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,12 @@ class LoopbackServiceTests(unittest.TestCase):
         self.assertIn('Required: --cert', result.stderr)
 
     def test_real_loopback_http_retains_origin_auth_and_private_ice_boundary(self):
+        self.exercise_http_boundaries('/')
+
+    def test_prefixed_http_keeps_assets_origin_and_credentials_under_its_path(self):
+        self.exercise_http_boundaries('/traverse/v1.2/')
+
+    def exercise_http_boundaries(self, base_path):
         with tempfile.TemporaryDirectory(prefix='traverse-loopback-api-') as tmp:
             root = Path(tmp)
             credential = 'test-router-credential'
@@ -49,6 +56,7 @@ class LoopbackServiceTests(unittest.TestCase):
                 process = subprocess.Popen([BINARY, '--internal-http', '--host', '127.0.0.1',
                                             '--origin', 'https://desktop.example.com', '--port', str(port),
                                             '--socket', str(root/'absent-adapter.sock'), '--web', WEB,
+                                            '--base-path', base_path,
                                             '--ice-config', str(config), '--supervisor-pid', str(os.getpid())],
                                            stdout=log, stderr=log)
                 base = f'http://127.0.0.1:{port}'
@@ -70,21 +78,38 @@ class LoopbackServiceTests(unittest.TestCase):
                             log.seek(0)
                             self.fail('Service failed startup: '+log.read())
                         try:
-                            self.assertEqual(request('/')[0], 200)
+                            self.assertEqual(request(base_path)[0], 200)
                             break
                         except urllib.error.URLError:
                             self.assertLess(time.monotonic(), deadline, 'Loopback service never became ready')
                             time.sleep(.02)
-                    for path in ['/', '/client.js', '/api/stats']:
-                        _, payload = request(path)
+                    for suffix, expected in [('', 200), ('client.js', 200), ('style.css', 200), ('api/stats', 403)]:
+                        status, payload = request(base_path+suffix)
+                        self.assertEqual(status, expected)
                         self.assertNotIn(credential.encode(), payload)
                         self.assertNotIn(b'test-router-user', payload)
-                    status, payload = request('/api/pair', {'code': 'invalid'}, 'https://other.example.com')
+                    if base_path != '/':
+                        # Python 3.10 does not follow 308 redirects. Inspect the real
+                        # status/target directly, then fetch it, on every baseline.
+                        redirect = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+                        try:
+                            redirect.request('GET', base_path.rstrip('/'))
+                            response = redirect.getresponse()
+                            self.assertEqual(response.status, 308)
+                            self.assertEqual(response.getheader('Location'), base_path)
+                            response.read()
+                        finally:
+                            redirect.close()
+                        self.assertEqual(request(base_path)[0], 200)
+                        self.assertEqual(request('/')[0], 404)
+                        self.assertEqual(request('/api/pair', {'code': 'invalid'}, 'https://desktop.example.com')[0], 404)
+                        self.assertEqual(request(base_path.replace('v1.2', 'v1X2'))[0], 404)
+                    status, payload = request(base_path+'api/pair', {'code': 'invalid'}, 'https://other.example.com')
                     self.assertEqual(status, 403)
                     self.assertIn(b'Origin rejected', payload)
-                    for path, body in [('/api/pair', {'code': 'invalid'}),
-                                       ('/api/offer', {'type': 'offer', 'sdp': 'invalid'})]:
-                        status, payload = request(path, body, 'https://desktop.example.com')
+                    for suffix, body in [('api/pair', {'code': 'invalid'}),
+                                         ('api/offer', {'type': 'offer', 'sdp': 'invalid'})]:
+                        status, payload = request(base_path+suffix, body, 'https://desktop.example.com')
                         self.assertEqual(status, 403)
                         self.assertNotIn(credential.encode(), payload)
                         self.assertNotIn(b'test-router-user', payload)

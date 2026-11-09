@@ -1,6 +1,6 @@
 #include "common.hpp"
+#include "endpoint_settings.hpp"
 #include <fcntl.h>
-#include <regex>
 #include <spawn.h>
 #include <sys/file.h>
 #include <sys/wait.h>
@@ -74,19 +74,6 @@ class OwnerLock {
     }
 };
 
-static int config_port(const json &config, const char *key, int fallback) {
-    if (!config.contains(key))
-        return fallback;
-    if (!config[key].is_number_integer())
-        throw std::runtime_error(std::string(key) + " must be an integer");
-    if (config[key].is_number_unsigned() && config[key].get<unsigned long long>() > 65535)
-        throw std::runtime_error(std::string(key) + " is out of range");
-    auto port = config[key].get<long long>();
-    if (port < 1 || port > 65535)
-        throw std::runtime_error(std::string(key) + " must be between 1 and 65535");
-    return static_cast<int>(port);
-}
-
 int main(int argc, char **argv) {
     try {
         Args args(argc, argv);
@@ -112,45 +99,22 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Create " + config_path +
                                      " from config.example.json, or pass --config FILE");
         auto config = json::parse(file);
-        if (!config.is_object())
-            throw std::runtime_error("Configuration must be a JSON object");
-        const std::vector<std::string> fields = {"origin",       "certificate", "privateKey",
-                                                 "display",      "httpsPort",   "mediaPort",
-                                                 "listenAddress"};
-        for (auto it = config.begin(); it != config.end(); ++it)
-            if (std::find(fields.begin(), fields.end(), it.key()) == fields.end())
-                throw std::runtime_error("Unknown configuration field: " + it.key());
-        auto origin = config.at("origin").get<std::string>();
-        if (origin.rfind("https://", 0) || origin.find_first_of("\r\n\t ") != std::string::npos ||
-            origin.find('/', 8) != std::string::npos || origin.find('@') != std::string::npos ||
-            origin.find('?') != std::string::npos || origin.find('#') != std::string::npos ||
-            origin.size() <= 8)
-            throw std::runtime_error(
-                "origin must be an HTTPS origin without a path or credentials");
-        auto cert = config.at("certificate").get<std::string>();
-        auto key = config.at("privateKey").get<std::string>();
-        if (cert.empty() || key.empty())
-            throw std::runtime_error("certificate and privateKey are required");
-        int port = config_port(config, "httpsPort", 8443);
-        int media_port = config_port(config, "mediaPort", 50000);
-        if (port == media_port)
-            throw std::runtime_error("HTTPS and passive ICE-TCP currently need separate TCP ports");
-        std::smatch origin_parts;
-        if (!std::regex_match(
-                origin, origin_parts,
-                std::regex(
-                    R"(^https://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)(?::([0-9]+))?$)")))
-            throw std::runtime_error("Invalid HTTPS origin hostname/port");
-        auto public_port = origin_parts[2].matched ? std::stoull(origin_parts[2].str()) : 443;
-        if (public_port != static_cast<unsigned>(port))
-            throw std::runtime_error("Standalone HTTPS origin port must match httpsPort");
-        auto display =
-            config.value("display", std::string(getenv("DISPLAY") ? getenv("DISPLAY") : ""));
-        auto address = config.value("listenAddress", std::string("0.0.0.0"));
+        auto settings = traverse::EndpointSettings::parse(
+            config, getenv("DISPLAY") ? getenv("DISPLAY") : "",
+            std::filesystem::absolute(config_path).parent_path().string());
+        const auto &origin = settings.origin;
+        const auto &cert = settings.certificate;
+        const auto &key = settings.private_key;
+        const auto &display = settings.display;
+        const auto &address = settings.listen_address;
+        const auto port = settings.port;
+        const auto media_port = settings.media_port;
         if (args.has("--check-config")) {
             std::cout << "Configuration valid; no screen capture or listener started\n";
             return 0;
         }
+        if (settings.mode == traverse::EndpointMode::Standalone)
+            throw std::runtime_error("Standalone runtime integration is not built yet");
         if (display.empty())
             throw std::runtime_error("An existing X11 DISPLAY is required");
         umask(0077);

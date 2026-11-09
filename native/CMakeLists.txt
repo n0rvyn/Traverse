@@ -10,15 +10,22 @@ find_package(Threads REQUIRED)
 find_package(X11 REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+add_library(traverse-settings endpoint_settings.cpp)
+target_include_directories(traverse-settings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(traverse-settings PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(traverse-settings PUBLIC nlohmann_json::nlohmann_json)
 add_library(traverse-tls-routing tls_router.cpp)
 target_compile_options(traverse-tls-routing PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(traverse-tls-routing PUBLIC OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
-# Experimental front end; not installed or selected by the product launcher yet.
+# Shared public TLS listener; standalone supervisor integration selects it explicitly.
 add_executable(traverse-tls-frontend tls_frontend.cpp)
 target_link_libraries(traverse-tls-frontend PRIVATE traverse-tls-routing)
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_executable(endpoint-settings-test ../tests/endpoint_settings_test.cpp)
+  target_link_libraries(endpoint-settings-test PRIVATE traverse-settings)
+  add_test(NAME endpoint-settings COMMAND endpoint-settings-test)
   add_test(NAME tls-router-sockets COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/../tests/tls_router_test.py $<TARGET_FILE:traverse-tls-frontend>
     $<TARGET_FILE:traverse-service>)
@@ -30,7 +37,7 @@ target_link_libraries(traverse-common INTERFACE httplib::httplib nlohmann_json::
 add_executable(traverse-adapter adapter.cpp input.cpp)
 target_link_libraries(traverse-adapter PRIVATE traverse-common X11::X11 X11::Xtst)
 add_executable(traverse-service service.cpp)
-target_link_libraries(traverse-service PRIVATE traverse-common)
+target_link_libraries(traverse-service PRIVATE traverse-common traverse-settings)
 if(BUILD_TESTING)
   add_test(NAME loopback-service-boundaries COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/../tests/loopback_service_test.py $<TARGET_FILE:traverse-service>
@@ -39,8 +46,8 @@ endif()
 add_executable(traverse-runtime-check runtime_check.cpp)
 target_link_libraries(traverse-runtime-check PRIVATE nlohmann_json::nlohmann_json PkgConfig::GST PkgConfig::SRTP OpenSSL::Crypto)
 add_executable(traverse-launcher launcher.cpp)
-target_link_libraries(traverse-launcher PRIVATE traverse-common)
-install(TARGETS traverse-adapter traverse-service traverse-runtime-check traverse-launcher RUNTIME DESTINATION libexec/traverse)
+target_link_libraries(traverse-launcher PRIVATE traverse-common traverse-settings)
+install(TARGETS traverse-adapter traverse-service traverse-runtime-check traverse-launcher traverse-tls-frontend RUNTIME DESTINATION libexec/traverse)
 install(DIRECTORY ../web/ DESTINATION share/traverse/web)
 
 install(FILES ../packaging/config.example.json DESTINATION share/traverse)

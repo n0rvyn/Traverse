@@ -43,11 +43,24 @@
       "version": "0.51.0",
       "url": "https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.51.0.tar.gz",
       "sha256": "d740ced75352f44e9d66d08806dc231b5621bb3592b5a5d5b2bd890a9a9d86cc"
+    },
+    {
+      "name": "coturn",
+      "version": "4.18.0",
+      "sourceCommit": "23c6c1d32a3d2b21a56cee65d3203bcc4ea82d2b",
+      "url": "https://github.com/coturn/coturn/archive/refs/tags/4.18.0.tar.gz",
+      "sha256": "28d55294ac596fbd129b293a85e7bb1c5dc4bd15b7fb55c500f355149e5f4e28",
+      "build_exclude_paths": [
+        "examples",
+        "man"
+      ]
     }
   ],
   "runtime_executables": [
     "xmessage",
-    "gst-plugin-scanner"
+    "gst-plugin-scanner",
+    "turnserver",
+    "traverse-tls-frontend"
   ],
   "host_dependencies": [
     "Linux glibc >= 2.35",

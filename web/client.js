@@ -26,7 +26,7 @@ function releaseSyntheticModifiers() {
 const keys = new Set([...Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZ', c=>'Key'+c), ...Array.from('0123456789', n=>'Digit'+n), ...Array.from({length:12},(_,n)=>'F'+(n+1)), 'Space','Enter','Tab','Escape','Backspace','Delete','Insert','Home','End','PageUp','PageDown','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','ShiftLeft','ShiftRight','ControlLeft','ControlRight','AltLeft','AltRight','MetaLeft','MetaRight','Minus','Equal','BracketLeft','BracketRight','Backslash','Semicolon','Quote','Backquote','Comma','Period','Slash']);
 function status(text, live=false) { $('state').textContent=text; document.body.classList.toggle('connected',live); $('overlay').hidden=live; $('overlay').textContent=text; }
 async function api(path, body) {
-  const r = await fetch('/api/'+path, {method:'POST', headers:{'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{})}, body:JSON.stringify(body)});
+  const r = await fetch(new URL('api/'+path, document.baseURI), {method:'POST', headers:{'Content-Type':'application/json', ...(token?{Authorization:'Bearer '+token}:{})}, body:JSON.stringify(body)});
   if (!r.ok) { let text=await r.text();try{text=JSON.parse(text).error??text;}catch{} const e=new Error(text); e.status=r.status; throw e; }
   return r.json();
 }

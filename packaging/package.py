@@ -87,6 +87,7 @@ def main():
     if not arch:raise ValueError('Unsupported build architecture '+architecture)
     helpers=prefix/'libexec/traverse';helpers.mkdir(parents=True,exist_ok=True)
     shutil.copy2('/usr/bin/xmessage',helpers/'xmessage')
+    shutil.copy2(runtime/'bin/turnserver',helpers/'turnserver')
     scanner=runtime/'libexec/gstreamer-1.0/gst-plugin-scanner'
     scanner_dest=prefix/'libexec/gstreamer-1.0/gst-plugin-scanner';scanner_dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(scanner,scanner_dest)
     plugins=libdir/'gstreamer-1.0';plugins.mkdir()
@@ -147,6 +148,7 @@ def main():
         if Path(source).is_relative_to(runtime):continue
         packages.update(distribution_owners(source))
     packages.add('x11-utils')
+    packages.add('nlohmann-json3-dev') # Header-only code also needs its distribution notice/source identity.
     for package in sorted(packages):
         source=Path('/usr/share/doc')/package.split(':')[0]/'copyright'
         if source.is_file():shutil.copy2(source,notices/(package.replace(':','-')+'.copyright'))

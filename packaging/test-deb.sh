@@ -5,10 +5,18 @@ apt-get update
 apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-base gcc libc6-dev libx11-dev libxtst-dev python3 openssl curl
 apt-get install -y /src/dist/*.deb
 traverse --check-runtime
+python3 /src/tests/installed_turn.py
 mkdir -p /tmp/relocated
 archive=$(find /src/dist -maxdepth 1 -name "traverse-*-$(uname -m).tar.gz" -print -quit)
 tar -xf "$archive" -C /tmp/relocated
 /tmp/relocated/traverse/bin/traverse --check-runtime
+python3 /src/tests/installed_turn.py /tmp/relocated/traverse
+# The TURN executable is required even when host packages provide another server.
+mv /tmp/relocated/traverse/libexec/traverse/turnserver /tmp/relocated/traverse/libexec/traverse/turnserver.missing
+if /tmp/relocated/traverse/bin/traverse --check-runtime; then
+  echo 'Missing private TURN executable incorrectly passed runtime checks' >&2; exit 1
+fi
+mv /tmp/relocated/traverse/libexec/traverse/turnserver.missing /tmp/relocated/traverse/libexec/traverse/turnserver
 # Missing a dynamically loaded crypto provider must fail even if host NSS is installed.
 mv /tmp/relocated/traverse/lib/libsoftokn3.so /tmp/relocated/traverse/lib/libsoftokn3.so.missing
 if /tmp/relocated/traverse/bin/traverse --check-runtime; then

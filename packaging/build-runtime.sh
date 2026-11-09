@@ -11,7 +11,7 @@ sed -n 's/^deb /deb-src /p' /etc/apt/sources.list > /etc/apt/sources.list.d/trav
 apt-get update
 apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config python3 python3-venv python3-pip curl ca-certificates flex bison patch git \
   libglib2.0-dev libssl-dev libvpx-dev libsrtp2-dev libusrsctp-dev libx11-dev libxext-dev libxfixes-dev libxdamage-dev libxtst-dev liborc-0.4-dev nlohmann-json3-dev \
-  x11-utils xfonts-base xvfb xauth dpkg-dev rpm patchelf
+  x11-utils xfonts-base xvfb xauth dpkg-dev rpm patchelf libevent-dev libmicrohttpd-dev
 mkdir -p "$work/sources" "$prefix"
 python3 -m venv "$work/tools"
 "$work/tools/bin/pip" install meson==1.6.1
@@ -37,6 +37,11 @@ cmake -S "$work/sources/cpp-httplib" -B "$work/build-httplib" -DCMAKE_INSTALL_PR
   -DHTTPLIB_COMPILE=ON -DBUILD_SHARED_LIBS=ON -DHTTPLIB_REQUIRE_OPENSSL=ON -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=OFF
 cmake --build "$work/build-httplib" -j "${BUILD_JOBS:-2}"
 cmake --install "$work/build-httplib"
+cmake -S "$work/sources/coturn" -B "$work/build-coturn" -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$prefix" -DWITH_MYSQL=OFF -DBUILD_TESTING=OFF
+cmake --build "$work/build-coturn" --target turnserver -j "${BUILD_JOBS:-2}"
+# The source archive retains examples/docs; only the server is part of our runtime.
+install -m755 "$work/build-coturn/bin/turnserver" "$prefix/bin/turnserver"
 cmake -S "$root/native" -B "$work/build-native" -G Ninja -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/traverse
 cmake --build "$work/build-native" -j "${BUILD_JOBS:-2}"
 ctest --test-dir "$work/build-native" --output-on-failure

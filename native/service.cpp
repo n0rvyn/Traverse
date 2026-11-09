@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "endpoint_settings.hpp"
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 
@@ -417,7 +418,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
 class Service {
     std::mutex state_mutex, operation_mutex;
     Ipc ipc;
-    std::string token, origin, stun, web_root;
+    std::string token, origin, stun, web_root, base_path;
     int udp_port, bitrate;
     bool udp_only;
     json ice_config;
@@ -434,10 +435,10 @@ class Service {
 
   public:
     Service(std::string socket, std::string expected_origin, std::string server, std::string root,
-            int port, int rate, bool only_udp, json client_config)
+            int port, int rate, bool only_udp, json client_config, std::string path)
         : ipc(std::move(socket)), origin(std::move(expected_origin)), stun(std::move(server)),
-          web_root(std::move(root)), udp_port(port), bitrate(rate), udp_only(only_udp),
-          ice_config(std::move(client_config)) {}
+          web_root(std::move(root)), base_path(std::move(path)), udp_port(port), bitrate(rate),
+          udp_only(only_udp), ice_config(std::move(client_config)) {}
     void drop(const std::shared_ptr<Peer> &expected = nullptr) {
         std::shared_ptr<Peer> old;
         {
@@ -453,8 +454,18 @@ class Service {
         }
     }
     void routes(httplib::Server &server) {
+        auto literal = [](const std::string &path) {
+            std::string result;
+            for (char c : path) {
+                if (std::string_view(R"(\.^$|()[]{}*+?)").find(c) != std::string_view::npos)
+                    result += '\\';
+                result += c;
+            }
+            return result;
+        };
+        auto route = [&](const std::string &suffix) { return literal(base_path + suffix); };
         server.set_pre_routing_handler([this](const httplib::Request &r, httplib::Response &s) {
-            if (r.path.rfind("/api/", 0) == 0 && r.method == "POST" &&
+            if (r.path.rfind(base_path + "api/", 0) == 0 && r.method == "POST" &&
                 r.get_header_value("Origin") != origin) {
                 reply(s, {{"error", "Origin rejected"}}, 403);
                 return httplib::Server::HandlerResponse::Handled;
@@ -469,10 +480,16 @@ class Service {
                          "default-src 'self'; connect-src 'self'; media-src 'self' blob:; "
                          "style-src 'self'; script-src 'self'; frame-ancestors 'none'");
         });
+        if (base_path != "/") {
+            server.Get(literal(base_path.substr(0, base_path.size() - 1)),
+                       [this](const httplib::Request &, httplib::Response &s) {
+                           s.set_redirect(base_path, 308);
+                       });
+        }
         for (auto entry : std::vector<std::pair<std::string, std::string>>{
-                 {"/", "index.html"}, {"/client.js", "client.js"}, {"/style.css", "style.css"}}) {
-            server.Get(entry.first, [this, name = entry.second](const httplib::Request &,
-                                                                httplib::Response &s) {
+                 {"", "index.html"}, {"client.js", "client.js"}, {"style.css", "style.css"}}) {
+            server.Get(route(entry.first), [this, name = entry.second](const httplib::Request &,
+                                                                       httplib::Response &s) {
                 std::ifstream file(std::filesystem::path(web_root) / name, std::ios::binary);
                 if (!file) {
                     s.status = 404;
@@ -485,7 +502,7 @@ class Service {
                                                                 : "text/css");
             });
         }
-        server.Post("/api/pair", [this](const httplib::Request &r, httplib::Response &s) {
+        server.Post(route("api/pair"), [this](const httplib::Request &r, httplib::Response &s) {
             std::lock_guard op(operation_mutex);
             try {
                 if (!credential().empty()) {
@@ -507,7 +524,7 @@ class Service {
                 reply(s, {{"error", e.what()}}, 403);
             }
         });
-        server.Post("/api/offer", [this](const httplib::Request &r, httplib::Response &s) {
+        server.Post(route("api/offer"), [this](const httplib::Request &r, httplib::Response &s) {
             std::lock_guard op(operation_mutex);
             if (!authorized(r)) {
                 reply(s, {{"error", "Pair first"}}, 403);
@@ -539,16 +556,17 @@ class Service {
                 reply(s, {{"error", e.what()}}, 400);
             }
         });
-        server.Post("/api/disconnect", [this](const httplib::Request &r, httplib::Response &s) {
-            std::lock_guard op(operation_mutex);
-            if (!authorized(r)) {
-                reply(s, {{"error", "Pair first"}}, 403);
-                return;
-            }
-            drop();
-            reply(s, {{"ok", true}});
-        });
-        server.Get("/api/stats", [this](const httplib::Request &r, httplib::Response &s) {
+        server.Post(route("api/disconnect"),
+                    [this](const httplib::Request &r, httplib::Response &s) {
+                        std::lock_guard op(operation_mutex);
+                        if (!authorized(r)) {
+                            reply(s, {{"error", "Pair first"}}, 403);
+                            return;
+                        }
+                        drop();
+                        reply(s, {{"ok", true}});
+                    });
+        server.Get(route("api/stats"), [this](const httplib::Request &r, httplib::Response &s) {
             if (!authorized(r)) {
                 reply(s, {{"error", "Pair first"}}, 403);
                 return;
@@ -612,6 +630,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Internal HTTP requires the public HTTPS origin");
         if (origin.empty() || (!internal_http && (cert.empty() || key.empty())))
             throw std::runtime_error("Required: --cert FILE --key FILE --origin https://HOST:PORT");
+        auto base_path =
+            traverse::EndpointSettings::normalize_base_path(args.get("--base-path", "/"));
         gst_init(nullptr, nullptr);
         std::signal(SIGINT, signal_stop);
         std::signal(SIGTERM, signal_stop);
@@ -621,7 +641,8 @@ int main(int argc, char **argv) {
                         args.get("--web", "web"), std::stoi(args.get("--udp-port", "50000")),
                         std::stoi(args.get("--bitrate", "6000000")), args.has("--udp-only"),
                         client_ice_config(args.get("--ice-config"),
-                                          args.get("--stun", "stun://stun.cloudflare.com:3478")));
+                                          args.get("--stun", "stun://stun.cloudflare.com:3478")),
+                        base_path);
         std::unique_ptr<httplib::Server> server;
         if (internal_http) {
             server = std::make_unique<httplib::Server>();
@@ -648,7 +669,7 @@ int main(int argc, char **argv) {
                 listener_failed = true;
         });
         std::cout << (internal_http ? "Internal HTTP backend for " : "Listening at ") << origin
-                  << std::endl;
+                  << (base_path == "/" ? "" : base_path) << std::endl;
         while (!stopping && !listener_failed) {
             service.tick();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));

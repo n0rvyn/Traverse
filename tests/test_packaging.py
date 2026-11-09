@@ -49,5 +49,26 @@ class PackagingTests(unittest.TestCase):
                 item=tarfile.TarInfo('source/README');item.size=0;tar.addfile(item)
             fetch.safe_extract(path,Path(tmp)/'out')
             self.assertTrue((Path(tmp)/'out/source/README').is_file())
+    def test_explicit_build_exclusions_skip_only_the_named_subtrees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'source.tar'
+            with tarfile.open(path,'w') as tar:
+                tar.addfile(tarfile.TarInfo('source/src/main.c'))
+                link=tarfile.TarInfo('source/examples/key.pem');link.type=tarfile.SYMTYPE;link.linkname='../fixture/key.pem';tar.addfile(link)
+            target=Path(tmp)/'out'
+            fetch.safe_extract(path,target,['examples'])
+            self.assertTrue((target/'source/src/main.c').is_file())
+            self.assertFalse((target/'source/examples').exists())
+            with self.assertRaises(ValueError):fetch.safe_extract(path,Path(tmp)/'strict')
+    def test_build_exclusions_do_not_hide_traversal_or_other_links(self):
+        for name,kind in [('source/examples/../../escape',tarfile.REGTYPE),('source/src/link',tarfile.SYMTYPE),('/source/examples/escape',tarfile.REGTYPE)]:
+            with tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'source.tar'
+                with tarfile.open(path,'w') as tar:
+                    member=tarfile.TarInfo(name);member.type=kind;member.linkname='/etc/passwd';tar.addfile(member)
+                with self.assertRaises(ValueError):fetch.safe_extract(path,Path(tmp)/'out',['examples'])
+        with tempfile.TemporaryDirectory() as tmp:
+            for invalid in ['/absolute','../outside','']:
+                with self.assertRaises(ValueError):fetch.safe_extract(Path(tmp)/'absent.tar',Path(tmp)/'out',[invalid])
 
 if __name__=='__main__':unittest.main()
