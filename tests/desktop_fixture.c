@@ -6,6 +6,7 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -17,7 +18,20 @@ static GC gc;
 static int width=1024, height=720, px=0, py=0, scroll_y=0, scroll_x=0;
 static unsigned int modifiers=0;
 static unsigned long presses=0, releases=0, clicks=0, revision=0, visual_id=0;
-static char text[1024]="", last_key[128]="none";
+static char *text;
+static size_t text_length=0, text_capacity=0;
+static char last_key[128]="none";
+static void append_text(unsigned char value) {
+    if(text_length>SIZE_MAX-2){fputs("fixture text size overflow\n",stderr);exit(1);}
+    if(text_length+2>text_capacity){
+        size_t capacity=text_capacity?text_capacity:1024;
+        while(capacity<text_length+2)capacity=capacity>SIZE_MAX/2?text_length+2:capacity*2;
+        char *grown=realloc(text,capacity);
+        if(!grown){perror("fixture text allocation");exit(1);}
+        text=grown;text_capacity=capacity;
+    }
+    text[text_length++]=(char)value;text[text_length]=0;
+}
 static const char *state_path;
 
 static void save(void) {
@@ -27,7 +41,7 @@ static void save(void) {
     FILE *f=fopen(tmp,"w");
     if(!f){perror("fixture state");exit(1);}
     fprintf(f,"{\"revision\":%lu,\"pointer\":[%d,%d],\"scrollY\":%d,\"scrollX\":%d,\"presses\":%lu,\"releases\":%lu,\"clicks\":%lu,\"modifiers\":%u,\"lastKey\":\"%s\",\"size\":[%d,%d],\"text\":\"",revision,px,py,scroll_y,scroll_x,presses,releases,clicks,modifiers,last_key,width,height);
-    for(size_t i=0;i<strlen(text);i++) {
+    for(size_t i=0;i<text_length;i++) {
         unsigned char c=(unsigned char)text[i];
         if(c=='"'||c=='\\')fputc('\\',f);
         if(c>=32&&c<127)fputc(c,f);
@@ -68,6 +82,9 @@ static void draw(void) {
 int main(int argc,char **argv) {
     if(argc!=2){fprintf(stderr,"usage: %s STATE_JSON\n",argv[0]);return 2;}
     state_path=argv[1];
+    text=calloc(1,1024);
+    if(!text){perror("fixture text allocation");return 1;}
+    text_capacity=1024;
     display=XOpenDisplay(NULL);
     if(!display){fprintf(stderr,"XOpenDisplay failed\n");return 1;}
     int screen=DefaultScreen(display);
@@ -79,6 +96,9 @@ int main(int argc,char **argv) {
     XFontStruct *font=XLoadQueryFont(display,"9x15");
     if(font)XSetFont(display,gc,font->fid);
     XMapWindow(display,window);
+    /* A window manager redirects mapping; focus requires a viewable window. */
+    XEvent mapped;
+    do {XWindowEvent(display,window,StructureNotifyMask,&mapped);} while(mapped.type!=MapNotify);
     XSetInputFocus(display,window,RevertToParent,CurrentTime);
     XSync(display,False);
     printf("window=%lu pid=%ld\n",window,(long)getpid());fflush(stdout);
@@ -106,11 +126,9 @@ int main(int argc,char **argv) {
             if(symbol==XK_F8)visual_id++;
             const char *name=XKeysymToString(symbol);
             snprintf(last_key,sizeof(last_key),"%s",name?name:"unknown");
-            if(symbol==XK_BackSpace){if(strlen(text))text[strlen(text)-1]=0;}
+            if(symbol==XK_BackSpace){if(text_length)text[--text_length]=0;}
             else if(n>0 && !(modifiers&(ControlMask|Mod1Mask|Mod4Mask))) {
-                for(int i=0;i<n;i++)if(buf[i]>=32 && buf[i]<127 && strlen(text)+1<sizeof(text)) {
-                    size_t length=strlen(text);text[length]=buf[i];text[length+1]=0;
-                }
+                for(int i=0;i<n;i++)if(buf[i]>=32 && buf[i]<127)append_text((unsigned char)buf[i]);
             }
             break;
         }
