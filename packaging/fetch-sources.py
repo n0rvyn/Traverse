@@ -38,7 +38,7 @@ def main():
     for source in manifest['sources']:
         archive = dest/source['url'].split('/')[-1]
         if not archive.exists():
-            subprocess.run(['curl','--fail','--location','--retry','3','--output',str(archive),source['url']],check=True)
+            subprocess.run(['curl','--fail','--location','--retry','3','--retry-all-errors','--output',str(archive),source['url']],check=True)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != source['sha256']:
             raise ValueError('Source digest mismatch: '+source['name'])
         target = dest/source['name']
