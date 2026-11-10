@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPalette>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScreen>
@@ -23,6 +24,21 @@ static void report(const QJsonObject &value) {
 int main(int argc,char **argv) {
     if(geteuid()==0)return 2;
     QApplication app(argc,argv);
+    // Synthetic palette coverage only; this does not certify a desktop theme.
+    if(qEnvironmentVariable("TRAVERSE_TEST_DARK_PALETTE")=="1") {
+        app.setStyle("Fusion");
+        auto palette=app.palette();
+        palette.setColor(QPalette::Window,QColor(40,40,40));
+        palette.setColor(QPalette::WindowText,QColor(235,235,235));
+        palette.setColor(QPalette::Base,QColor(30,30,30));
+        palette.setColor(QPalette::Text,QColor(235,235,235));
+        palette.setColor(QPalette::Button,QColor(55,55,55));
+        palette.setColor(QPalette::ButtonText,QColor(235,235,235));
+        palette.setColor(QPalette::Disabled,QPalette::WindowText,QColor(130,130,130));
+        palette.setColor(QPalette::Disabled,QPalette::Text,QColor(130,130,130));
+        palette.setColor(QPalette::Disabled,QPalette::ButtonText,QColor(130,130,130));
+        app.setPalette(palette);
+    }
     if(argc==2 && QByteArray(argv[1])=="--clipboard-probe") {
         QByteArray input;
         for(int value;(value=std::getchar())!='\n' && value!=EOF;)input.append(char(value));
