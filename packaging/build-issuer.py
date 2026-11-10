@@ -105,12 +105,12 @@ def main():
     command([go,'mod','vendor'],cwd=source,env=environment)
     if before!={name:hashlib.sha256((source/name).read_bytes()).hexdigest() for name in before}:
         raise ValueError('Issuer build changed locked module metadata')
-    packages=list(json_stream(command([go,'list','-mod=vendor','-deps','-json','./cmd/traverse-issuer'],cwd=source,env=environment)))
+    packages=list(json_stream(command([go,'list','-buildvcs=false','-mod=vendor','-deps','-json','./cmd/traverse-issuer'],cwd=source,env=environment)))
     actual={(p['Module']['Path'],p['Module']['Version']) for p in packages if p.get('Module') and not p['Module'].get('Main')}
     expected={(m['path'],m['version']) for m in policy['modules']}
     if actual!=expected:raise ValueError('Issuer compiled module closure differs from declared policy')
     # Tests run with the same declared compiler. Installed artifacts need no Go.
-    print(command([go,'test','-mod=vendor','./...'],cwd=source,env=environment),end='')
+    print(command([go,'test','-buildvcs=false','-mod=vendor','./...'],cwd=source,env=environment),end='')
     destination=stage/'opt/traverse/libexec/traverse/traverse-issuer'
     destination.parent.mkdir(parents=True,exist_ok=True)
     command([go,'build','-mod=vendor','-buildvcs=false','-trimpath','-ldflags=-s -w','-o',destination,'./cmd/traverse-issuer'],cwd=source,env=environment)
