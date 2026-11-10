@@ -24,6 +24,7 @@ jobs:
         with:
           ref: ${{ inputs.source-ref || github.sha }}
       - name: Build on the declared glibc baseline
+        id: build
         run: |
           docker pull ubuntu:22.04
           image=$(docker image inspect ubuntu:22.04 --format '{{index .RepoDigests 0}}')
@@ -50,3 +51,15 @@ jobs:
           name: installed-test-failure-images-${{ matrix.arch }}
           path: .work/managed-failure-images/*.png
           if-no-files-found: ignore
+      - name: Preserve packages from failed acceptance for diagnosis
+        if: failure() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          # Release downloads only packages-*. Keep failed acceptance separate.
+          name: failed-acceptance-packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error

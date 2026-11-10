@@ -313,7 +313,7 @@ def main():
         finally:
             if owner:owner.close()
             ca.close()
-    print(json.dumps({'status':'passed','scope':'actual UID65534 owner/native/privateCA/X11 SDK lifecycle',
+    print(json.dumps({'status':'passed','scope':'actual UID65534 owner/native/privateCA/X11 lifecycle',
         'cases':reports,'ownerLogsReadOrExported':False,'publicCA':False}),flush=True)
 
 
