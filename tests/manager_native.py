@@ -58,15 +58,25 @@ def main():
                 reader = threading.Thread(target=read_events);reader.start()
                 def event(predicate, description, seconds=30):
                     deadline = time.monotonic()+seconds
+                    history=[]
                     while time.monotonic()<deadline:
                         assert not failure and process.poll() is None, 'Native manager exited: '+description
                         try:
                             item = events.get(timeout=min(.1, max(.001, deadline-time.monotonic())))
                         except queue.Empty:
                             continue
+                        # Retain only this synthetic producer's typed state;
+                        # never export paths, keys, account URLs or owner logs.
+                        observed={key:item.get(key) for key in ('managerGeneration','managerPaused',
+                            'phase','reason','operationActive','available','proofOnly',
+                            'publicationUncertain','frontendRevision','renewAt','checkAt') if key in item}
+                        observed['observedWallSeconds']=time.time()
+                        if 'fingerprint' in item:
+                            observed['frontendMatchesMaterial']=item.get('frontendFingerprint')==item['fingerprint']
+                        history.append(observed)
                         if predicate(item):
                             return item
-                    raise AssertionError('Native manager timeout: '+description)
+                    raise AssertionError('Native manager timeout: '+description+'; typed states='+json.dumps(history))
                 initial = event(lambda value: value.get('proofOnly') and value.get('operationActive'), 'actual bootstrap operation')
                 def open_application():
                     raw = socket.create_connection(('127.0.0.1', port), timeout=3)
