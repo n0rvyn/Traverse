@@ -1,4 +1,5 @@
 #include "standalone.hpp"
+#include "certificate_manager.hpp"
 #include "child.hpp"
 #include "tls_certificate.hpp"
 #include <arpa/inet.h>
@@ -25,50 +26,75 @@ class PrivateFiles {
     void write(const char *name, const std::string &contents) {
         auto path = directory / name;
         int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-        if (fd < 0) throw std::runtime_error("Cannot create private sharing configuration");
+        if (fd < 0)
+            throw std::runtime_error("Cannot create private sharing configuration");
         size_t offset = 0;
         while (offset < contents.size()) {
             auto count = ::write(fd, contents.data() + offset, contents.size() - offset);
-            if (count < 0 && errno == EINTR) continue;
+            if (count < 0 && errno == EINTR)
+                continue;
             if (count <= 0) {
                 close(fd);
                 throw std::runtime_error("Cannot write private sharing configuration");
             }
             offset += count;
         }
-        if (close(fd)) throw std::runtime_error("Cannot close private sharing configuration");
+        if (close(fd))
+            throw std::runtime_error("Cannot close private sharing configuration");
     }
 };
 class Reservation {
     int fd = -1;
+
   public:
     unsigned short port;
     Reservation() {
         fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (fd < 0) throw std::runtime_error("Cannot reserve private backend port");
+        if (fd < 0)
+            throw std::runtime_error("Cannot reserve private backend port");
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         socklen_t size = sizeof(address);
         if (bind(fd, reinterpret_cast<sockaddr *>(&address), size) ||
             getsockname(fd, reinterpret_cast<sockaddr *>(&address), &size)) {
-            close(fd);fd = -1;
+            close(fd);
+            fd = -1;
             throw std::runtime_error("Cannot reserve private backend port");
         }
         port = ntohs(address.sin_port);
     }
-    void release() { if (fd >= 0) { close(fd);fd = -1; } }
-    ~Reservation() { release(); }
+    void release() {
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
+    }
+    ~Reservation() {
+        release();
+    }
 };
 class Sharing {
     Ipc ipc;
+
   public:
-    std::unique_ptr<Child> adapter, turn, service, frontend;
+    std::unique_ptr<Child> adapter, turn, service, frontend, validation;
+    std::unique_ptr<CertificateManager> certificates;
     bool owns_adapter = false;
     explicit Sharing(const std::string &socket) : ipc(socket) {}
     void check() {
         for (auto *child : {adapter.get(), turn.get(), service.get(), frontend.get()})
-            if (child) child->check();
+            if (child)
+                child->check();
+        if (validation) {
+            try {
+                validation->check();
+            } catch (const std::exception &) {
+                validation.reset();
+                if (certificates)
+                    certificates->validation_route(false);
+            }
+        }
     }
     ~Sharing() {
         // Release held input before any potentially blocking network teardown.
@@ -78,12 +104,21 @@ class Sharing {
                     json empty = json::object();
                     ipc.call("/revoke", &empty);
                 }
-            } catch (...) {}
+            } catch (...) {
+            }
         }
-        if (adapter) adapter->stop();
-        if (frontend) frontend->stop();
-        if (service) service->stop();
-        if (turn) turn->stop();
+        if (adapter)
+            adapter->stop();
+        if (certificates)
+            certificates->stop();
+        if (validation)
+            validation->stop();
+        if (frontend)
+            frontend->stop();
+        if (service)
+            service->stop();
+        if (turn)
+            turn->stop();
     }
 };
 class CertificateObserver {
@@ -93,7 +128,7 @@ class CertificateObserver {
 
   public:
     explicit CertificateObserver(bool automatic = false) : allow_unprovisioned(automatic) {}
-    void observe(const std::string &path, pid_t frontend) {
+    std::optional<TlsCertificateStatus> observe(const std::string &path, pid_t frontend) {
         try {
             auto current = read_tls_certificate_status(path, frontend, allow_unprovisioned);
             if (!metadata_error.empty())
@@ -102,10 +137,11 @@ class CertificateObserver {
             if (!current.available) {
                 if (!previous || previous->available) {
                     auto now = std::time(nullptr);
-                    auto reason = !current.revision ? "not provisioned" :
-                        now == static_cast<std::time_t>(-1) ? "unavailable" :
-                        now >= current.valid_until ? "expired" :
-                        now < current.valid_from ? "not yet valid" : "unavailable";
+                    auto reason = !current.revision                     ? "not provisioned"
+                                  : now == static_cast<std::time_t>(-1) ? "unavailable"
+                                  : now >= current.valid_until          ? "expired"
+                                  : now < current.valid_from            ? "not yet valid"
+                                                                        : "unavailable";
                     std::cerr << "Traverse certificate: " << reason
                               << "; new connections unavailable\n";
                 }
@@ -117,19 +153,23 @@ class CertificateObserver {
                 std::cerr << "Traverse certificate: renewal recovered; sharing continues\n";
             }
             if (!current.error.empty() && (!previous || current.error != previous->error))
-                std::cerr << "Traverse certificate: " <<
-                    (current.revision ? "renewal rejected: " : "provisioning pending: ") << current.error << '\n';
+                std::cerr << "Traverse certificate: "
+                          << (current.revision ? "renewal rejected: " : "provisioning pending: ")
+                          << current.error << '\n';
             previous = std::move(current);
+            return previous;
         } catch (const std::exception &error) {
             if (metadata_error != error.what())
                 std::cerr << "Traverse certificate: status unavailable: " << error.what() << '\n';
             metadata_error = error.what();
+            return std::nullopt;
         }
     }
 };
 std::set<std::string> relay_addresses() {
     ifaddrs *list = nullptr;
-    if (getifaddrs(&list)) throw std::runtime_error("Cannot inspect local relay addresses");
+    if (getifaddrs(&list))
+        throw std::runtime_error("Cannot inspect local relay addresses");
     std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> owned(list, freeifaddrs);
     std::set<std::string> addresses;
     for (auto *item = list; item; item = item->ifa_next) {
@@ -140,23 +180,28 @@ std::set<std::string> relay_addresses() {
             auto address = reinterpret_cast<sockaddr_in *>(item->ifa_addr)->sin_addr;
             auto host = ntohl(address.s_addr);
             if ((host >> 24) == 127 || (host >> 16) == 0xa9fe || (host >> 24) == 0 ||
-                (host >> 28) >= 14) continue;
-            if (inet_ntop(AF_INET, &address, text, sizeof(text))) addresses.insert(text);
+                (host >> 28) >= 14)
+                continue;
+            if (inet_ntop(AF_INET, &address, text, sizeof(text)))
+                addresses.insert(text);
         } else if (item->ifa_addr->sa_family == AF_INET6) {
             auto address = reinterpret_cast<sockaddr_in6 *>(item->ifa_addr)->sin6_addr;
             if (IN6_IS_ADDR_LINKLOCAL(&address) || IN6_IS_ADDR_MULTICAST(&address) ||
                 IN6_IS_ADDR_UNSPECIFIED(&address) || IN6_IS_ADDR_LOOPBACK(&address) ||
-                IN6_IS_ADDR_V4MAPPED(&address)) continue;
-            if (inet_ntop(AF_INET6, &address, text, sizeof(text))) addresses.insert(text);
+                IN6_IS_ADDR_V4MAPPED(&address))
+                continue;
+            if (inet_ntop(AF_INET6, &address, text, sizeof(text)))
+                addresses.insert(text);
         }
     }
-    if (addresses.empty()) throw std::runtime_error("No eligible local relay interface address");
+    if (addresses.empty())
+        throw std::runtime_error("No eligible local relay interface address");
     return addresses;
 }
 bool owns_listener(pid_t pid, unsigned short port) {
     std::set<std::string> inodes;
-    for (const auto &entry : std::filesystem::directory_iterator(
-             "/proc/" + std::to_string(pid) + "/fd")) {
+    for (const auto &entry :
+         std::filesystem::directory_iterator("/proc/" + std::to_string(pid) + "/fd")) {
         std::error_code error;
         auto link = std::filesystem::read_symlink(entry.path(), error).string();
         if (!error && link.rfind("socket:[", 0) == 0 && link.back() == ']')
@@ -165,48 +210,72 @@ bool owns_listener(pid_t pid, unsigned short port) {
     char endpoint[32];
     std::snprintf(endpoint, sizeof(endpoint), "0100007F:%04X", port);
     std::ifstream sockets("/proc/net/tcp");
-    if (!sockets) throw std::runtime_error("Cannot inspect private TURN listener");
+    if (!sockets)
+        throw std::runtime_error("Cannot inspect private TURN listener");
     for (std::string line; std::getline(sockets, line);) {
         std::istringstream input(line);
         std::vector<std::string> fields;
-        for (std::string field; input >> field;) fields.push_back(field);
+        for (std::string field; input >> field;)
+            fields.push_back(field);
         if (fields.size() >= 10 && fields[1] == endpoint && fields[3] == "0A" &&
-            inodes.count(fields[9])) return true;
+            inodes.count(fields[9]))
+            return true;
     }
     return false;
 }
 bool https_ready(const EndpointSettings &settings) {
     auto host = settings.listen_address;
-    if (host == "0.0.0.0") host = "127.0.0.1";
-    if (host == "::") host = "::1";
+    if (host == "0.0.0.0")
+        host = "127.0.0.1";
+    if (host == "::")
+        host = "::1";
     sockaddr_storage address{};
     auto *v4 = reinterpret_cast<sockaddr_in *>(&address);
     auto *v6 = reinterpret_cast<sockaddr_in6 *>(&address);
     int family = AF_INET;
     socklen_t size = sizeof(*v4);
     if (inet_pton(AF_INET, host.c_str(), &v4->sin_addr) == 1) {
-        v4->sin_family = AF_INET;v4->sin_port = htons(settings.port);
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons(settings.port);
     } else {
-        family = AF_INET6;size = sizeof(*v6);
-        v6->sin6_family = AF_INET6;v6->sin6_port = htons(settings.port);
+        family = AF_INET6;
+        size = sizeof(*v6);
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons(settings.port);
         if (inet_pton(AF_INET6, host.c_str(), &v6->sin6_addr) != 1)
             throw std::runtime_error("Invalid local HTTPS probe address");
     }
     int fd = socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) throw std::runtime_error("Cannot probe local HTTPS listener");
-    struct Close { int fd;~Close() { close(fd); } } owned{fd};
+    if (fd < 0)
+        throw std::runtime_error("Cannot probe local HTTPS listener");
+    struct Close {
+        int fd;
+        ~Close() {
+            close(fd);
+        }
+    } owned{fd};
     timeval timeout{1, 0};
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
         throw std::runtime_error("Cannot bound local HTTPS probe");
-    if (connect(fd, reinterpret_cast<sockaddr *>(&address), size)) return false;
-    std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
-    if (!context || !SSL_CTX_set_default_verify_paths(context.get()))
+    if (connect(fd, reinterpret_cast<sockaddr *>(&address), size))
+        return false;
+    std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(SSL_CTX_new(TLS_client_method()),
+                                                              SSL_CTX_free);
+    bool custom_trust = settings.certificates.mode == CertificateMode::Automatic &&
+                        !settings.certificates.certificate_trust_file.empty();
+    if (!context ||
+        (custom_trust ? SSL_CTX_load_verify_locations(
+                            context.get(), settings.certificates.certificate_trust_file.c_str(),
+                            nullptr) != 1
+                      : SSL_CTX_set_default_verify_paths(context.get()) != 1))
         throw std::runtime_error("Cannot load system HTTPS trust store");
     SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
     std::unique_ptr<SSL, decltype(&SSL_free)> tls(SSL_new(context.get()), SSL_free);
-    if (!tls) throw std::runtime_error("Cannot create HTTPS verification session");
-    in_addr ip4{};in6_addr ip6{};
+    if (!tls)
+        throw std::runtime_error("Cannot create HTTPS verification session");
+    in_addr ip4{};
+    in6_addr ip6{};
     if (inet_pton(AF_INET, settings.domain.c_str(), &ip4) == 1 ||
         inet_pton(AF_INET6, settings.domain.c_str(), &ip6) == 1) {
         if (!X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(tls.get()), settings.domain.c_str()))
@@ -219,15 +288,16 @@ bool https_ready(const EndpointSettings &settings) {
             throw std::runtime_error("HTTPS certificate is not trusted for the configured domain");
         return false;
     }
-    auto request = "GET " + settings.base_path + " HTTP/1.1\r\nHost: " +
-                   settings.origin.substr(8) + "\r\nConnection: close\r\n\r\n";
+    auto request = "GET " + settings.base_path + " HTTP/1.1\r\nHost: " + settings.origin.substr(8) +
+                   "\r\nConnection: close\r\n\r\n";
     if (SSL_write(tls.get(), request.data(), request.size()) != static_cast<int>(request.size()))
         return false;
     std::string response;
     char bytes[1024];
     while (response.find("\r\n") == std::string::npos) {
         int count = SSL_read(tls.get(), bytes, sizeof(bytes));
-        if (count <= 0) return false;
+        if (count <= 0)
+            return false;
         response.append(bytes, count);
     }
     return response.rfind("HTTP/1.1 200 ", 0) == 0;
@@ -236,7 +306,8 @@ bool https_ready(const EndpointSettings &settings) {
 
 void turn_child(const std::filesystem::path &configuration,
                 const std::filesystem::path &binary_directory) {
-    if (!configuration.is_absolute()) throw std::runtime_error("Private TURN config must be absolute");
+    if (!configuration.is_absolute())
+        throw std::runtime_error("Private TURN config must be absolute");
     if (chdir(configuration.parent_path().c_str()))
         throw std::runtime_error("Cannot enter private TURN runtime directory");
     auto binary = (binary_directory / "turnserver").string();
@@ -244,28 +315,49 @@ void turn_child(const std::filesystem::path &configuration,
     throw std::runtime_error("Cannot execute private TURN server");
 }
 
-int standalone(const EndpointSettings &settings, const std::filesystem::path &binary_directory,
+int standalone(const EndpointSettings &requested, const std::filesystem::path &binary_directory,
                const std::filesystem::path &prefix, const std::filesystem::path &runtime) {
+    auto settings = requested;
     PrivateFiles files(runtime);
     auto socket = (runtime / "adapter.sock").string();
     Ipc ipc(socket);
     Sharing children(socket);
+    const bool automatic = settings.certificates.mode == CertificateMode::Automatic;
+    if (automatic) {
+        const char *data = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+        if ((!data || !*data) && (!home || !*home))
+            throw std::runtime_error("Automatic certificates require an owner data directory");
+        auto data_home =
+            std::filesystem::path(data && *data ? data : std::string(home) + "/.local/share");
+        if (!data_home.is_absolute())
+            throw std::runtime_error("Owner data directory must be absolute");
+        data_home = std::filesystem::weakly_canonical(data_home);
+        children.certificates = std::make_unique<CertificateManager>(
+            settings.certificates, data_home.string(), binary_directory / "traverse-issuer",
+            (files.directory / "acme-validation.sock").string());
+        settings.certificates.certificate = children.certificates->bundle();
+        settings.certificates.private_key = children.certificates->bundle();
+    }
     Reservation http, turn;
     auto addresses = relay_addresses();
     auto username = "traverse-" + random_secret(16), password = random_secret(32);
     std::string config = "listening-ip=127.0.0.1\nlistening-port=" + std::to_string(turn.port) +
-        "\nno-udp\nno-tls\ndtls=false\ncli=false\nweb-admin=false\nno-tcp-relay\n"
-        "lt-cred-mech\nrealm=" + settings.domain + "\nuser=" + username + ":" + password +
-        "\ndenied-peer-ip=0.0.0.0-255.255.255.255\n"
-        "denied-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff\n"
-        "no-multicast-peers\npidfile=turn.pid\nuserdb=turn.sqlite\nlog-file=turn.log\nsimple-log\nrelay-threads=1\n";
+                         "\nno-udp\nno-tls\ndtls=false\ncli=false\nweb-admin=false\nno-tcp-relay\n"
+                         "lt-cred-mech\nrealm=" +
+                         settings.domain + "\nuser=" + username + ":" + password +
+                         "\ndenied-peer-ip=0.0.0.0-255.255.255.255\n"
+                         "denied-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff\n"
+                         "no-multicast-peers\npidfile=turn.pid\nuserdb=turn.sqlite\nlog-file=turn."
+                         "log\nsimple-log\nrelay-threads=1\n";
     for (const auto &address : addresses)
         config += "relay-ip=" + address + "\nallowed-peer-ip=" + address + "\n";
     files.write("turn.conf", config);
     json ice = {{"iceServers", json::array({{{"urls", settings.turns_url()},
-                                            {"username", username}, {"credential", password}}})}};
+                                             {"username", username},
+                                             {"credential", password}}})}};
     files.write("ice.json", ice.dump());
-    children.adapter = std::make_unique<Child>(binary_directory / "traverse-adapter",
+    children.adapter = std::make_unique<Child>(
+        binary_directory / "traverse-adapter",
         std::vector<std::string>{"--display", settings.display, "--socket", socket});
     auto deadline = Clock::now() + std::chrono::seconds(15);
     bool ready = false;
@@ -279,90 +371,192 @@ int standalone(const EndpointSettings &settings, const std::filesystem::path &bi
             ready = state.value("armed", false);
             break;
         } catch (const std::exception &) {
-            if (children.owns_adapter) throw;
+            if (children.owns_adapter)
+                throw;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (!ready) throw std::runtime_error("Desktop adapter did not become ready");
+    if (!ready)
+        throw std::runtime_error("Desktop adapter did not become ready");
     turn.release();
-    children.turn = std::make_unique<Child>(binary_directory / "traverse-launcher",
+    children.turn = std::make_unique<Child>(
+        binary_directory / "traverse-launcher",
         std::vector<std::string>{"--turn-child", (files.directory / "turn.conf").string()});
     deadline = Clock::now() + std::chrono::seconds(15);
     while (!stopping && !owns_listener(children.turn->id(), turn.port)) {
         children.check();
-        if (Clock::now() >= deadline) throw std::runtime_error("Private TURN listener did not become ready");
+        if (Clock::now() >= deadline)
+            throw std::runtime_error("Private TURN listener did not become ready");
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    auto start = [&](const char *role, const char *name, std::vector<std::string> args) {
+    auto start = [&](const char *role, const char *name, std::vector<std::string> args,
+                     unsigned short public_port) {
         auto binary = binary_directory / name;
-        if (settings.port < 1024) {
+        if (public_port < 1024) {
             binary = binary_directory / "traverse-bind-helper";
             args.insert(args.begin(), role);
         }
         return std::make_unique<Child>(binary, args, true);
     };
     http.release();
-    children.service = start("service", "traverse-service",
-        {"--internal-http", "--host", "127.0.0.1", "--port", std::to_string(http.port),
-         "--origin", settings.origin, "--socket", socket, "--web", (prefix / "share/traverse/web").string(),
-         "--base-path", settings.base_path, "--udp-port", std::to_string(settings.port), "--udp-only",
-         "--check-udp-port", "--ice-config", (files.directory / "ice.json").string()});
+    children.service = start(
+        "service", "traverse-service",
+        {"--internal-http", "--host", "127.0.0.1", "--port", std::to_string(http.port), "--origin",
+         settings.origin, "--socket", socket, "--web", (prefix / "share/traverse/web").string(),
+         "--base-path", settings.base_path, "--udp-port", std::to_string(settings.port),
+         "--udp-only", "--check-udp-port", "--ice-config", (files.directory / "ice.json").string()},
+        settings.port);
     auto expected = "Internal HTTP backend for " + settings.origin +
                     (settings.base_path == "/" ? "" : settings.base_path);
     if (children.service->ready_line() != expected)
         throw std::runtime_error("Internal HTTP service readiness response invalid");
-    std::vector<std::string> frontend_arguments =
-        {"--host", settings.listen_address, "--port", std::to_string(settings.port),
-         "--http-port", std::to_string(http.port), "--turn-port", std::to_string(turn.port),
-         "--cert", settings.certificate, "--key", settings.private_key,
-         "--expected-domain", settings.domain,
-         "--status-file", (files.directory / "tls-status.json").string()};
+    std::vector<std::string> frontend_arguments = {"--host",
+                                                   settings.listen_address,
+                                                   "--port",
+                                                   std::to_string(settings.port),
+                                                   "--http-port",
+                                                   std::to_string(http.port),
+                                                   "--turn-port",
+                                                   std::to_string(turn.port),
+                                                   "--cert",
+                                                   settings.certificates.certificate,
+                                                   "--key",
+                                                   settings.certificates.private_key,
+                                                   "--expected-domain",
+                                                   settings.domain,
+                                                   "--status-file",
+                                                   (files.directory / "tls-status.json").string()};
     // The binding helper intentionally clears environment and changes cwd. Carry
     // only the caller's selected trust locations as explicit, absolute arguments.
-    if (const char *file = getenv("SSL_CERT_FILE")) {
-        frontend_arguments.insert(frontend_arguments.end(), {"--trust-file",
-            *file ? std::filesystem::absolute(file).lexically_normal().string() : ""});
+    if (automatic && !settings.certificates.certificate_trust_file.empty()) {
+        frontend_arguments.insert(frontend_arguments.end(),
+                                  {"--trust-file", settings.certificates.certificate_trust_file,
+                                   "--trust-directory", ""});
+    } else if (const char *file = getenv("SSL_CERT_FILE")) {
+        frontend_arguments.insert(
+            frontend_arguments.end(),
+            {"--trust-file",
+             *file ? std::filesystem::absolute(file).lexically_normal().string() : ""});
     }
-    if (const char *directory = getenv("SSL_CERT_DIR")) {
+    if (const char *directory = getenv("SSL_CERT_DIR");
+        directory && !(automatic && !settings.certificates.certificate_trust_file.empty())) {
         std::string resolved, paths(directory);
         size_t begin = 0;
         while (true) {
             auto end = paths.find(':', begin);
             auto path = paths.substr(begin, end == std::string::npos ? end : end - begin);
-            if (!path.empty()) resolved += std::filesystem::absolute(path).lexically_normal().string();
-            if (end == std::string::npos) break;
+            if (!path.empty())
+                resolved += std::filesystem::absolute(path).lexically_normal().string();
+            if (end == std::string::npos)
+                break;
             resolved += ':';
             begin = end + 1;
         }
         frontend_arguments.insert(frontend_arguments.end(), {"--trust-directory", resolved});
     }
-    children.frontend = start("frontend", "traverse-tls-frontend", frontend_arguments);
-    if (json::parse(children.frontend->ready_line()).value("port", 0) != settings.port)
-        throw std::runtime_error("TLS listener readiness response invalid");
-    CertificateObserver certificate_observer;
+    if (automatic)
+        frontend_arguments.insert(
+            frontend_arguments.end(),
+            {"--acme-socket", settings.port == 443
+                                  ? children.certificates->broker()
+                                  : (files.directory / "acme-application.sock").string()});
+    bool proof_only = automatic && !children.certificates->application().available;
+    auto launch_frontend = [&](bool proof) {
+        auto arguments = frontend_arguments;
+        if (proof)
+            arguments.insert(arguments.end(), {"--challenge-only", "true"});
+        children.frontend = start("frontend", "traverse-tls-frontend", arguments, settings.port);
+        if (json::parse(children.frontend->ready_line()).value("port", 0) != settings.port)
+            throw std::runtime_error("TLS listener readiness response invalid");
+    };
+    launch_frontend(proof_only);
+    if (automatic) {
+        bool validation_ready = settings.port == 443;
+        if (settings.port != 443) {
+            try {
+                children.validation =
+                    start("frontend", "traverse-tls-frontend",
+                          {"--host", settings.listen_address, "--port", "443", "--challenge-only",
+                           "true", "--expected-domain", settings.domain, "--acme-socket",
+                           children.certificates->broker(), "--status-file",
+                           (files.directory / "validation-status.json").string()},
+                          443);
+                if (json::parse(children.validation->ready_line()).value("port", 0) != 443)
+                    throw std::runtime_error("Validation listener readiness response invalid");
+                auto status = read_tls_certificate_status(
+                    (files.directory / "validation-status.json").string(),
+                    children.validation->id(), true);
+                if (status.available || status.revision)
+                    throw std::runtime_error(
+                        "Validation-only listener admitted application material");
+                validation_ready = true;
+            } catch (const std::exception &) {
+                children.validation.reset();
+                if (proof_only)
+                    throw std::runtime_error("Standard certificate validation port443 is "
+                                             "unavailable; no account or order started");
+            }
+        }
+        children.certificates->validation_route(validation_ready);
+    }
+    CertificateObserver certificate_observer(automatic);
     auto certificate_status = (files.directory / "tls-status.json").string();
-    // The child has published its initial owned snapshot before readiness. An
-    // invalid initial producer cannot establish a ready configured endpoint.
-    read_tls_certificate_status(certificate_status, children.frontend->id());
+    auto initial =
+        read_tls_certificate_status(certificate_status, children.frontend->id(), proof_only);
+    if (children.certificates)
+        children.certificates->frontend(initial);
     certificate_observer.observe(certificate_status, children.frontend->id());
+    auto owner_armed = [&] {
+        auto state = ipc.call("/state");
+        if (state.value("pid", pid_t{-1}) != children.adapter->id())
+            throw std::runtime_error("Desktop adapter ownership changed");
+        return state.value("armed", false);
+    };
+    // Local listener startup keeps its existing deadline; CA validation is an
+    // owned asynchronous workflow and can remain pending beyond15seconds.
+    while (!stopping && proof_only) {
+        children.check();
+        if (!owner_armed())
+            return 0;
+        children.certificates->tick();
+        if (children.certificates->application().available) {
+            children.frontend.reset();
+            launch_frontend(false);
+            proof_only = false;
+            children.certificates->frontend(
+                read_tls_certificate_status(certificate_status, children.frontend->id()));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (stopping)
+        return 0;
     deadline = Clock::now() + std::chrono::seconds(15);
     ready = false;
     while (!stopping && Clock::now() < deadline) {
         children.check();
-        if (https_ready(settings)) { ready = true;break; }
+        if (https_ready(settings)) {
+            ready = true;
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (!ready) throw std::runtime_error("Local HTTPS endpoint did not become ready");
+    if (!ready)
+        throw std::runtime_error("Local HTTPS endpoint did not become ready");
     std::cout << "Traverse URL: " << settings.public_url()
               << "\nLocal HTTPS verified. External reachability is not yet verified. "
-                 "Use the local pairing dialog to connect; press Ctrl+C to stop.\n" << std::flush;
+                 "Use the local pairing dialog to connect; press Ctrl+C to stop.\n"
+              << std::flush;
     while (!stopping) {
         children.check();
-        certificate_observer.observe(certificate_status, children.frontend->id());
-        auto state = ipc.call("/state");
-        if (state.value("pid", pid_t{-1}) != children.adapter->id())
-            throw std::runtime_error("Desktop adapter ownership changed");
-        if (!state.value("armed", false)) break;
+        if (!owner_armed())
+            break;
+        auto certificate =
+            certificate_observer.observe(certificate_status, children.frontend->id());
+        if (children.certificates) {
+            children.certificates->tick();
+            if (certificate)
+                children.certificates->frontend(*certificate);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return 0;

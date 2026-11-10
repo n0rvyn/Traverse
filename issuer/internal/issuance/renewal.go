@@ -2,11 +2,14 @@ package issuance
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io/fs"
 	"net/url"
@@ -20,15 +23,18 @@ import (
 
 // Public leaf metadata only. No key, account, order or raw CA error is exported.
 type RenewalMetadata struct {
-	Material         string `json:"material"`
-	Fingerprint      string `json:"fingerprint,omitempty"`
-	ValidFrom        int64  `json:"validFrom,omitempty"`
-	ValidUntil       int64  `json:"validUntil,omitempty"`
-	ARI              string `json:"ari"`
-	WindowStart      int64  `json:"windowStart,omitempty"`
-	WindowEnd        int64  `json:"windowEnd,omitempty"`
-	RetryAfterStatus string `json:"retryAfterStatus"`
-	RetryAt          int64  `json:"retryAt,omitempty"`
+	Recovery           string `json:"recovery"`
+	Material           string `json:"material"`
+	Fingerprint        string `json:"fingerprint,omitempty"`
+	ValidFrom          int64  `json:"validFrom,omitempty"`
+	ValidUntil         int64  `json:"validUntil,omitempty"`
+	ARI                string `json:"ari"`
+	WindowStart        int64  `json:"windowStart,omitempty"`
+	WindowEnd          int64  `json:"windowEnd,omitempty"`
+	WindowStartPrecise string `json:"windowStartPrecise,omitempty"`
+	WindowEndPrecise   string `json:"windowEndPrecise,omitempty"`
+	RetryAfterStatus   string `json:"retryAfterStatus"`
+	RetryAt            int64  `json:"retryAt,omitempty"`
 }
 
 // Unlike OpenStore this path cannot create state/locks, fsync it or retire
@@ -83,7 +89,7 @@ func readOnlyStore(path, directory string) (_ *Store, failure error) {
 }
 
 func renewalInfo(ctx context.Context, request Request, now time.Time) Result {
-	metadata := &RenewalMetadata{Material: "absent", ARI: "not_applicable", RetryAfterStatus: "absent"}
+	metadata := &RenewalMetadata{Recovery: "none", Material: "absent", ARI: "not_applicable", RetryAfterStatus: "absent"}
 	result := Result{Version: 1, Status: "renewal-info", Renewal: metadata}
 	store, err := readOnlyStore(request.StateDirectory, request.Directory)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -93,6 +99,10 @@ func renewalInfo(ctx context.Context, request Request, now time.Time) Result {
 		return failed("storage_unavailable")
 	}
 	defer store.Close()
+	metadata.Recovery, err = recoveryMetadata(store, request.Domain)
+	if err != nil {
+		return failed("order_state_unavailable")
+	}
 	bundle, err := store.read("bundle.pem")
 	if errors.Is(err, fs.ErrNotExist) {
 		return result
@@ -203,7 +213,42 @@ func renewalInfo(ctx context.Context, request Request, now time.Time) Result {
 	}
 	metadata.ARI = "valid"
 	metadata.WindowStart, metadata.WindowEnd = info.SuggestedWindow.Start.Unix(), info.SuggestedWindow.End.Unix()
+	metadata.WindowStartPrecise = info.SuggestedWindow.Start.UTC().Format(time.RFC3339Nano)
+	metadata.WindowEndPrecise = info.SuggestedWindow.End.UTC().Format(time.RFC3339Nano)
 	return result
+}
+
+// Only the cold helper inspects the saved leaf key. The native supervisor
+// receives a fixed recovery category, never private pending-order contents.
+func recoveryMetadata(store *Store, domain string) (string, error) {
+	data, err := store.read("pending.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return "none", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var pending pendingOrder
+	if json.Unmarshal(data, &pending) != nil || pending.Version != 1 || pending.Domain != domain ||
+		(pending.OrderURL != "" && validateHTTPS(pending.OrderURL) != nil) {
+		return "", errors.New("Invalid saved order identity")
+	}
+	block, rest := pem.Decode([]byte(pending.Key))
+	if block == nil || block.Type != "PRIVATE KEY" || len(rest) != 0 {
+		return "", errors.New("Invalid saved order key")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if err != nil || !ok || key.Curve != elliptic.P256() {
+		return "", errors.New("Invalid saved order key")
+	}
+	if pending.Completed {
+		return "completed", nil
+	}
+	if pending.OrderURL != "" {
+		return "resumable", nil
+	}
+	return "uncertain", nil
 }
 
 func validExplanation(value string) bool {

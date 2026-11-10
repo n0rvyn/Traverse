@@ -1,6 +1,6 @@
+#include "child.hpp"
 #include "common.hpp"
 #include "endpoint_settings.hpp"
-#include "child.hpp"
 #include "standalone.hpp"
 #include <fcntl.h>
 #include <sys/file.h>
@@ -40,10 +40,10 @@ int main(int argc, char **argv) {
             traverse::turn_child(args.get("--turn-child"), binary_dir);
         }
         if (args.has("--help")) {
-            std::cout
-                << "Usage: traverse [--config FILE] [--check-config]\n"
-                << "Run as the owner of an existing X11 desktop. Configure your self-hosted domain, "
-                   "certificate/key and optional port first.\n";
+            std::cout << "Usage: traverse [--config FILE] [--check-config]\n"
+                      << "Run as the owner of an existing X11 desktop. Configure your self-hosted "
+                         "domain, "
+                         "certificate/key and optional port first.\n";
             return 0;
         }
         const char *home = getenv("HOME");
@@ -65,8 +65,8 @@ int main(int argc, char **argv) {
             config, getenv("DISPLAY") ? getenv("DISPLAY") : "",
             std::filesystem::absolute(config_path).parent_path().string());
         const auto &origin = settings.origin;
-        const auto &cert = settings.certificate;
-        const auto &key = settings.private_key;
+        const auto &cert = settings.certificates.certificate;
+        const auto &key = settings.certificates.private_key;
         const auto &display = settings.display;
         const auto &address = settings.listen_address;
         const auto port = settings.port;

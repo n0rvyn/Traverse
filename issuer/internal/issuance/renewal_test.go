@@ -65,7 +65,7 @@ func stateSnapshot(t *testing.T, path string) map[string]string {
 
 func TestRenewalMetadataActualTLSAndReadOnlyState(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	for _, scenario := range []string{"valid", "unsupported", "equal-window", "missing-window", "unsafe-explanation", "unsafe-endpoint", "failed", "invalid-retry", "absent-retry", "zero-retry", "multiple-retry"} {
+	for _, scenario := range []string{"valid", "unsupported", "equal-window", "missing-window", "unsafe-explanation", "unsafe-endpoint", "failed", "invalid-retry", "absent-retry", "zero-retry", "multiple-retry", "fractional-window"} {
 		t.Run(scenario, func(t *testing.T) {
 			var directoryCalls, ariCalls, unexpected atomic.Int64
 			var requestedID string
@@ -106,6 +106,10 @@ func TestRenewalMetadataActualTLSAndReadOnlyState(t *testing.T) {
 						return
 					}
 					start, end := now.Add(time.Minute), now.Add(2*time.Minute)
+					if scenario == "fractional-window" {
+						start = now.Add(250 * time.Millisecond)
+						end = now.Add(750 * time.Millisecond)
+					}
 					if scenario == "equal-window" {
 						end = start
 					}
@@ -135,6 +139,9 @@ func TestRenewalMetadataActualTLSAndReadOnlyState(t *testing.T) {
 				t.Fatal(output.String())
 			}
 			metadata := result.Renewal
+			if scenario == "fractional-window" && (metadata.WindowStartPrecise == "" || metadata.WindowStartPrecise == metadata.WindowEndPrecise) {
+				t.Fatal("Precise ARI window lost", metadata)
+			}
 			expected := "valid"
 			switch scenario {
 			case "unsupported":
@@ -356,5 +363,46 @@ func TestRenewalUsesReplacementAndCancelsActualARIRequest(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("ARI ignored operation cancellation")
+	}
+}
+
+func TestReadOnlyRecoveryNeverExportsKeysOrResumesAmbiguousOrder(t *testing.T) {
+	request := Request{Version: 1, Operation: "renewal-info", Domain: "example.test", Directory: testDirectory}
+	request = renewalFixture(t, request)
+	bundle, err := os.ReadFile(filepath.Join(request.StateDirectory, "bundle.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificates, err := readCertificates(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, key, _ := testMaterial(t, request.Domain, 300)
+	for _, test := range []struct {
+		completed     bool
+		uri, category string
+	}{
+		{false, "", "uncertain"}, {false, "https://ca.example.test/orders/1", "resumable"}, {true, "https://ca.example.test/orders/1", "completed"},
+	} {
+		pending := pendingOrder{Version: 1, Domain: request.Domain, Key: string(key), OrderURL: test.uri, Completed: test.completed}
+		data, _ := json.Marshal(pending)
+		if err = os.WriteFile(filepath.Join(request.StateDirectory, "pending.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		result := renewalInfo(context.Background(), request, certificates[0].NotAfter.Add(time.Second))
+		if result.Renewal == nil || result.Renewal.Recovery != test.category {
+			t.Fatal(result)
+		}
+		output, _ := json.Marshal(result)
+		if bytes.Contains(output, []byte("PRIVATE KEY")) || bytes.Contains(output, []byte("orders/1")) {
+			t.Fatal("Private order state exported")
+		}
+	}
+	if err = os.WriteFile(filepath.Join(request.StateDirectory, "pending.json"), []byte(`{"version":1,"key":"private-key-marker"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := renewalInfo(context.Background(), request, time.Now())
+	if result.Code != "order_state_unavailable" {
+		t.Fatal(result)
 	}
 }

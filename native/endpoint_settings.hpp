@@ -1,4 +1,5 @@
 #pragma once
+#include "certificate_settings.hpp"
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -9,7 +10,8 @@ enum class EndpointMode { Legacy, Standalone };
 // Pure configuration contract: no display, networking or private media initialization.
 struct EndpointSettings {
     EndpointMode mode = EndpointMode::Standalone;
-    std::string domain, origin, base_path = "/", certificate, private_key, display;
+    std::string domain, origin, base_path = "/", display;
+    CertificateSettings certificates;
     std::string listen_address = "0.0.0.0";
     std::uint16_t port = 443, media_port = 443;
 

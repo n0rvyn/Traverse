@@ -54,8 +54,8 @@ int main() {
         relative["privateKey"] = "key.pem";
         rejects([&] { EndpointSettings::parse(relative); });
         auto resolved = EndpointSettings::parse(relative, "", "/home/owner/.config/traverse");
-        require(resolved.certificate == "/home/owner/.config/traverse/cert with spaces.pem" &&
-                    resolved.private_key == "/home/owner/.config/traverse/key.pem",
+        require(resolved.certificates.certificate == "/home/owner/.config/traverse/cert with spaces.pem" &&
+                    resolved.certificates.private_key == "/home/owner/.config/traverse/key.pem",
                 "Relative TLS paths did not use their configuration directory");
         for (const auto &[host, expected] : std::vector<std::pair<std::string, std::string>>{
                  {"2001:0db8::1", "https://[2001:db8::1]"},
@@ -119,7 +119,7 @@ int main() {
         require(old.mode == EndpointMode::Legacy && old.port == 8443 && old.media_port == 50000 &&
                     old.public_url() == "https://example.com:8443",
                 "Legacy omitted ports changed");
-        require(EndpointSettings::parse(legacy, "", "/tmp/config").certificate == "test.crt",
+        require(EndpointSettings::parse(legacy, "", "/tmp/config").certificates.certificate == "test.crt",
                 "Legacy relative TLS paths changed");
         legacy["httpsPort"] = 9443;
         legacy["origin"] = "https://example.com:9443";

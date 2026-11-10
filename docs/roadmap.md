@@ -2,6 +2,8 @@
 
 The current native C++/GStreamer slice shares one existing X11 desktop with ordinary Chrome: encrypted video/input, local pairing/Stop sharing, reconnect and an independent input guardian. It has been exercised on Gentoo and real Chrome, including crash/revoke tests. This is not remote login or headless session provisioning.
 
+The automatic certificate backend now has a separate native validation role, a cold issuer process and persistent renewal scheduling. Its private-CA checks cover bootstrap, cached restart, renewal, cancellation and interrupted-order uncertainty. First-run controls, public-provider selection/consent and the remaining acceptance matrix are still active work.
+
 Active delivery work:
 
 1. Native DEB/RPM/portable packages with private, reproducible media dependencies and safe lifecycle.

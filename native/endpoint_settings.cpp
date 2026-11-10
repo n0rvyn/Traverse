@@ -161,7 +161,7 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
         if (!config["schemaVersion"].is_number_integer() || config["schemaVersion"] != 1)
             throw std::runtime_error("Unsupported schemaVersion");
         fields(config, {"schemaVersion", "domain", "port", "basePath", "certificate", "privateKey",
-                        "display", "listenAddress"});
+                        "display", "listenAddress", "certificateSettings"});
         settings.domain = normalize_host(text(config, "domain"));
         settings.port = port_value(config, "port", 443);
         if (chrome_restricted(settings.port))
@@ -171,23 +171,9 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
         settings.origin = "https://" + uri_host(settings.domain) +
                           (settings.port == 443 ? "" : ":" + std::to_string(settings.port));
     }
-    settings.certificate = text(config, "certificate");
-    settings.private_key = text(config, "privateKey");
-    if (settings.certificate.empty() || settings.private_key.empty())
-        throw std::runtime_error("certificate and privateKey are required");
-    if (settings.mode == EndpointMode::Standalone) {
-        for (auto *value : {&settings.certificate, &settings.private_key}) {
-            auto path = std::filesystem::path(*value);
-            if (path.is_relative()) {
-                auto directory = std::filesystem::path(configuration_directory);
-                if (!directory.is_absolute())
-                    throw std::runtime_error(
-                        "Relative TLS paths require an absolute configuration directory");
-                path = directory / path;
-            }
-            *value = path.lexically_normal().string();
-        }
-    }
+    settings.certificates =
+        CertificateSettings::parse(config, settings.mode == EndpointMode::Standalone,
+                                   settings.domain, configuration_directory);
     settings.display = text(config, "display", default_display);
     settings.listen_address = text(config, "listenAddress", "0.0.0.0");
     if (settings.mode == EndpointMode::Standalone) {

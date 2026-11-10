@@ -126,6 +126,8 @@ class ValidationBridge(socketserver.ThreadingTCPServer):
         self.lock = threading.Lock()
         self.connections = set()
         self.stopped = threading.Event()
+        self.forward_gate = threading.Event()
+        self.forward_gate.set()
         owner = self
         class Handler(socketserver.BaseRequestHandler):
             def handle(handler):
@@ -134,6 +136,9 @@ class ValidationBridge(socketserver.ThreadingTCPServer):
                     owner.accepted += 1
                     owner.connections.add(handler.request)
                 try:
+                    while not owner.forward_gate.wait(.05):
+                        if owner.stopped.is_set():
+                            return
                     upstream = socket.create_connection(owner.target, timeout=2)
                     with owner.lock:
                         owner.connections.add(upstream)

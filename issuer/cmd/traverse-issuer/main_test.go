@@ -6,10 +6,27 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestOwnerInvocationIsExplicitAndStrict(t *testing.T) {
+	for _, arguments := range [][]string{nil, {"--supervisor-pid", strconv.Itoa(os.Getppid())}} {
+		if _, err := ownerArgument(arguments); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, arguments := range [][]string{{"--unknown", "1"}, {"--supervisor-pid"}, {"--supervisor-pid", "0"}, {"--supervisor-pid", "1"}, {"--supervisor-pid", "-1"}, {"--supervisor-pid", "+2"}, {"--supervisor-pid", "2147483648"}, {"--supervisor-pid", "2", "--supervisor-pid", "3"}} {
+		if _, err := ownerArgument(arguments); err == nil {
+			t.Fatal("Invalid invocation accepted")
+		}
+	}
+	if err := guardOwner(os.Getppid() + 1); err == nil {
+		t.Fatal("Different owner admitted")
+	}
+}
 
 func TestIssuerChild(t *testing.T) {
 	if os.Getenv("TRAVERSE_ISSUER_TEST_CHILD") != "1" {
