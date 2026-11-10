@@ -2,10 +2,11 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-base gcc libc6-dev libx11-dev libxtst-dev python3 openssl curl
+apt-get install -y --no-install-recommends ca-certificates xvfb xauth xfonts-base gcc libc6-dev libx11-dev libxtst-dev python3 openssl curl util-linux
 apt-get install -y /src/dist/*.deb
 traverse --check-runtime
 python3 /src/tests/installed_turn.py
+setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs python3 /src/tests/installed_issuer.py
 python3 /src/tests/bind_helper_test.py
 apt-get install -y --reinstall /src/dist/*.deb
 test "$(getcap /opt/traverse/libexec/traverse/traverse-bind-helper)" = '/opt/traverse/libexec/traverse/traverse-bind-helper cap_net_bind_service=ep'
@@ -15,6 +16,7 @@ archive=$(find /src/dist -maxdepth 1 -name "traverse-*-$(uname -m).tar.gz" -prin
 tar -xf "$archive" -C /tmp/relocated
 /tmp/relocated/traverse/bin/traverse --check-runtime
 python3 /src/tests/installed_turn.py /tmp/relocated/traverse
+setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs python3 /src/tests/installed_issuer.py /tmp/relocated/traverse
 # The TURN executable is required even when host packages provide another server.
 mv /tmp/relocated/traverse/libexec/traverse/turnserver /tmp/relocated/traverse/libexec/traverse/turnserver.missing
 if /tmp/relocated/traverse/bin/traverse --check-runtime; then

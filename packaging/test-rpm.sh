@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-dnf install -y python3 openssl /src/dist/*.rpm
+dnf install -y python3 openssl util-linux /src/dist/*.rpm
 traverse --check-runtime
 python3 /src/tests/installed_turn.py
+setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs python3 /src/tests/installed_issuer.py
 python3 /src/tests/bind_helper_test.py
 dnf reinstall -y /src/dist/*.rpm
 test "$(getcap /opt/traverse/libexec/traverse/traverse-bind-helper)" = '/opt/traverse/libexec/traverse/traverse-bind-helper cap_net_bind_service=ep'

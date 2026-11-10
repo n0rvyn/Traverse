@@ -46,4 +46,8 @@ cmake -S "$root/native" -B "$work/build-native" -G Ninja -DCMAKE_PREFIX_PATH="$p
 cmake --build "$work/build-native" -j "${BUILD_JOBS:-2}"
 ctest --test-dir "$work/build-native" --output-on-failure
 DESTDIR="$work/stage" cmake --install "$work/build-native"
-python3 "$root/packaging/package.py" --stage "$work/stage" --runtime "$prefix" --sources "$work/sources" --output "$root/dist"
+python3 "$root/packaging/build-issuer.py" --work "$work" --stage "$work/stage" --sources "$work/sources" --test-ca
+python3 "$root/packaging/package.py" --stage "$work/stage" --runtime "$prefix" --sources "$work/sources" --issuer-build "$work/issuer-build.json" --output "$root/dist"
+# Validate the exact assembled helper and frontend without contacting a public CA.
+python3 "$root/tests/issuer_native.py" --prefix "$work/stage/opt/traverse" --issuer "$work/stage/opt/traverse/libexec/traverse/traverse-issuer" --pebble "$work/issuer-tools/pebble"
+python3 "$root/tests/issuer_native.py" --prefix "$work/stage/opt/traverse" --issuer "$work/stage/opt/traverse/libexec/traverse/traverse-issuer" --pebble "$work/issuer-tools/pebble" --reuse-valid-authorizations

@@ -61,7 +61,8 @@
     "gst-plugin-scanner",
     "turnserver",
     "traverse-tls-frontend",
-    "traverse-bind-helper"
+    "traverse-bind-helper",
+    "traverse-issuer"
   ],
   "host_dependencies": [
     "Linux glibc >= 2.35",
@@ -98,5 +99,50 @@
       ],
       "preserve_bytes": true
     }
-  ]
+  ],
+  "certificateIssuer": {
+    "goVersion": "1.27.3",
+    "executable": "libexec/traverse/traverse-issuer",
+    "static": true,
+    "toolchains": {
+      "x86_64": {
+        "url": "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz",
+        "sha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
+      },
+      "aarch64": {
+        "url": "https://go.dev/dl/go1.27.3.linux-arm64.tar.gz",
+        "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49"
+      }
+    },
+    "goSources": {
+      "url": "https://go.dev/dl/go1.27.3.src.tar.gz",
+      "sha256": "6e7749035cf360f06b2575d162ea79df9fda8ef671889e5c375f8e50777f26bb"
+    },
+    "modules": [
+      {
+        "path": "github.com/go-acme/lego/v5",
+        "version": "v5.6.0",
+        "sum": "h1:tdr1k0mPExMhqFUee09aAD8kSDcM7rha9k8IBs1wuX0=",
+        "goModSum": "h1:dAEcH4oXoMtwgnwcuSHcCSSdkc8NM0mqtfVtKQzID9c="
+      },
+      {
+        "path": "github.com/cenkalti/backoff/v5",
+        "version": "v5.0.3",
+        "sum": "h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=",
+        "goModSum": "h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw="
+      },
+      {
+        "path": "github.com/go-jose/go-jose/v4",
+        "version": "v4.1.6",
+        "sum": "h1:sNRkftxFJxwsILiQukqp5z83QBSmntVwmgRY7AqBDO4=",
+        "goModSum": "h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08="
+      }
+    ],
+    "privateTestCA": {
+      "module": "github.com/letsencrypt/pebble/v2",
+      "version": "v2.10.1",
+      "sum": "h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=",
+      "goModSum": "h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY="
+    }
+  }
 }

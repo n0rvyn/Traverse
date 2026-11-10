@@ -41,7 +41,25 @@ def validate_abi(text, maximum):
 def run(args,**kwargs):return subprocess.check_output([str(x) for x in args],text=True,**kwargs)
 
 
+def static_executable(elf):
+    """Classify actual headers; never hide a failing dynamic dependency query."""
+    header=run(['readelf','-hW',elf])
+    program=run(['readelf','-lW',elf])
+    dynamic=run(['readelf','-dW',elf])
+    entry=re.search(r'Entry point address:\s*(0x[0-9a-fA-F]+)',header)
+    return (bool(re.search(r'Type:\s+EXEC\b',header)) and entry is not None and int(entry.group(1),16)!=0
+            and not re.search(r'^\s*INTERP\s',program,re.M) and '(NEEDED)' not in dynamic)
+
+
+def validate_elf_architecture(elf,architecture):
+    with Path(elf).open('rb') as source:header=source.read(20)
+    machine={'x86_64':62,'aarch64':183}.get(architecture)
+    if len(header)!=20 or header[:6]!=b'\x7fELF\x02\x01' or machine is None or int.from_bytes(header[18:20],'little')!=machine:
+        raise ValueError('ELF does not match declared package architecture: '+str(elf))
+
+
 def collect_dependencies(elf, libdir, env, origins=None):
+    if static_executable(elf):return []
     output=run(['ldd',elf],env=env)
     if 'not found' in output:raise ValueError('Unresolved ELF dependency: '+str(elf)+'\n'+output)
     copied=[]
@@ -78,9 +96,15 @@ def distribution_owners(source):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--stage',type=Path,required=True);parser.add_argument('--runtime',type=Path,required=True);parser.add_argument('--sources',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--issuer-build',type=Path,required=True)
     args=parser.parse_args();stage=args.stage.resolve();runtime=args.runtime.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     prefix=stage/'opt/traverse';libdir=prefix/'lib';libdir.mkdir(parents=True,exist_ok=True)
     manifest=json.loads((ROOT/'packaging/runtime-manifest.json').read_text())
+    issuer_build=json.loads(args.issuer_build.read_text())
+    issuer_binary=prefix/'libexec/traverse/traverse-issuer'
+    if issuer_build['binarySha256']!=hashlib.sha256(issuer_binary.read_bytes()).hexdigest():
+        raise ValueError('Issuer build identity differs from staged executable')
+    manifest['certificateIssuer']['build']=issuer_build
     version=validate_version(version_from_cmake((ROOT/'native/CMakeLists.txt').read_text()))
     architecture=run(['uname','-m']).strip()
     arch={'x86_64':('amd64','x86_64'),'aarch64':('arm64','aarch64')}.get(architecture)
@@ -128,8 +152,9 @@ def main():
     # Remove build-directory RUNPATHs only after dependency resolution, never from
     # integrity-checked provider binaries paired with vendor .chk files.
     for elf in seen:
+        validate_elf_architecture(elf,architecture)
         validate_abi(run(['readelf','--version-info',elf]),manifest['baseline']['glibc_max'])
-        if elf not in preserved:subprocess.run(['patchelf','--remove-rpath',str(elf)],check=True)
+        if elf not in preserved and not static_executable(elf):subprocess.run(['patchelf','--remove-rpath',str(elf)],check=True)
     bindir=prefix/'bin';bindir.mkdir()
     entry=(ROOT/'packaging/runtime-entry.sh').read_text().replace('@VERSION@',version)
     for name in ['traverse','traverse-adapter','traverse-service','traverse-runtime-check']:
@@ -137,7 +162,7 @@ def main():
     links=stage/'usr/bin';links.mkdir(parents=True)
     for name in ['traverse','traverse-adapter','traverse-service']:
         (links/name).symlink_to('/opt/traverse/bin/'+name)
-    notices=prefix/'share/traverse/licenses';notices.mkdir(parents=True)
+    notices=prefix/'share/traverse/licenses';notices.mkdir(parents=True,exist_ok=True)
     for source in args.sources.iterdir():
         if source.is_dir():
             target=notices/source.name;target.mkdir()
@@ -224,7 +249,7 @@ if [ "$1" = 0 ]; then rm -f /opt/traverse/share/traverse/registry.bin; fi
         for file in sorted(args.sources.iterdir()):
             if file.is_file():archive.add(file,arcname=file.name,filter=normalize)
             elif file.name=='distribution-sources':archive.add(file,arcname=file.name,filter=normalize)
-        for file in [ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/runtime-manifest.json']:
+        for file in [ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/build-issuer.py',ROOT/'packaging/fetch-sources.py',ROOT/'packaging/runtime-manifest.json',args.issuer_build]:
             archive.add(file,arcname=file.name,filter=normalize)
     artifacts=[p for p in out.iterdir() if p.is_file() and p.name!='SHA256SUMS']
     (out/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(artifacts)))

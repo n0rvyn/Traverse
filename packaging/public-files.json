@@ -12,6 +12,7 @@
     "docs/install.md"
   ],
   "directories": [
+    "issuer",
     "native",
     "web",
     "patches",
