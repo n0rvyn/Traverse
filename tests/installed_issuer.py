@@ -109,11 +109,16 @@ def main():
             request = {'version': 1, 'operation': 'issue', 'domain': 'installed.example.test', 'directory': origin+'/directory',
                        'stateDirectory': str(root/'state'), 'challengeSocket': str(root/'challenge.sock'),
                        'termsURL': terms, 'termsAgreed': False, 'apiTrustFile': str(certificate)}
-            def invoke():
+            def invoke(expected=1):
                 result = subprocess.run([str(binary)], input=json.dumps(request).encode(), capture_output=True, timeout=20)
-                assert result.returncode == 1 and not result.stderr, 'Failure/result channel changed'
+                assert result.returncode == expected and not result.stderr, 'Failure/result channel changed'
                 assert b'marker' not in result.stdout, 'Private upstream detail or retry log escaped'
                 return json.loads(result.stdout)
+            request['operation'] = 'renewal-info'
+            metadata = invoke(0)
+            assert metadata['status'] == 'renewal-info' and metadata['renewal']['material'] == 'absent'
+            assert state['requests'] == 0 and not (root/'state').exists(), 'Metadata created state or contacted CA for absent material'
+            request['operation'] = 'issue'
             assert invoke()['code'] == 'invalid_request'
             assert state['requests'] == 0 and not (root/'state').exists(), 'Consent denial contacted CA or wrote state'
             request['termsAgreed'] = True

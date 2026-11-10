@@ -16,10 +16,15 @@ import (
 )
 
 type operationTransport struct {
-	ctx       context.Context
-	transport http.RoundTripper
-	mutex     sync.Mutex
-	retryAt   map[string]time.Time
+	ctx          context.Context
+	transport    http.RoundTripper
+	mutex        sync.Mutex
+	retryAt      map[string]time.Time
+	retryHeaders map[string]retryObservation
+}
+type retryObservation struct {
+	at     time.Time
+	status string
 }
 type operationBody struct {
 	io.ReadCloser
@@ -48,9 +53,56 @@ func (t *operationTransport) RoundTrip(request *http.Request) (*http.Response, e
 		t.retryAt = map[string]time.Time{}
 	}
 	t.retryAt[request.URL.String()] = retryTime(response.Header.Get("Retry-After"), time.Now())
+	if t.retryHeaders == nil {
+		t.retryHeaders = map[string]retryObservation{}
+	}
+	observation := retryObservation{status: "absent"}
+	if values := response.Header.Values("Retry-After"); len(values) != 0 {
+		observation.status = "invalid"
+		if len(values) == 1 {
+			if at, valid := retryDeadline(values[0], time.Now()); valid {
+				observation = retryObservation{at: at, status: "valid"}
+			}
+		}
+	}
+	t.retryHeaders[request.URL.String()] = observation
 	t.mutex.Unlock()
 	response.Body = &operationBody{response.Body, release}
 	return response, nil
+}
+
+// Keep ARI's raw header validity separate from challenge polling's fallback.
+func retryDeadline(value string, now time.Time) (time.Time, bool) {
+	if value != "" {
+		digits := true
+		for _, c := range value {
+			if c < '0' || c > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			if seconds, err := strconv.ParseUint(value, 10, 64); err == nil && seconds <= uint64((1<<63-1)/time.Second) {
+				return now.Add(time.Duration(seconds) * time.Second), true
+			}
+		}
+	}
+	if date, err := http.ParseTime(value); err == nil {
+		if date.Before(now) {
+			date = now
+		}
+		return date, true
+	}
+	return time.Time{}, false
+}
+
+func (t *operationTransport) renewalRetry(uri string) retryObservation {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	if observed, ok := t.retryHeaders[uri]; ok {
+		return observed
+	}
+	return retryObservation{status: "absent"}
 }
 
 func retryTime(value string, now time.Time) time.Time {

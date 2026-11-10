@@ -35,6 +35,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) int {
 				result.Code = "ca_unavailable"
 			}
 			close()
+		} else if request.Operation == "renewal-info" {
+			result = renewalInfo(ctx, request, time.Now())
 		} else {
 			result = issue(ctx, request)
 		}

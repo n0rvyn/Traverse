@@ -26,13 +26,14 @@ type Request struct {
 }
 
 type Result struct {
-	Version     int          `json:"version"`
-	Status      string       `json:"status"`
-	Code        string       `json:"code,omitempty"`
-	Reason      string       `json:"reason,omitempty"`
-	CAProblem   string       `json:"caProblem,omitempty"`
-	TermsURL    string       `json:"termsURL,omitempty"`
-	Publication *Publication `json:"publication,omitempty"`
+	Version     int              `json:"version"`
+	Status      string           `json:"status"`
+	Code        string           `json:"code,omitempty"`
+	Reason      string           `json:"reason,omitempty"`
+	CAProblem   string           `json:"caProblem,omitempty"`
+	TermsURL    string           `json:"termsURL,omitempty"`
+	Publication *Publication     `json:"publication,omitempty"`
+	Renewal     *RenewalMetadata `json:"renewal,omitempty"`
 }
 
 func canonicalDNS(domain string) (string, error) {
@@ -92,7 +93,7 @@ func DecodeRequest(input io.Reader) (Request, error) {
 	}
 	typed := json.NewDecoder(bytes.NewReader(data))
 	typed.DisallowUnknownFields()
-	if typed.Decode(&result) != nil || result.Version != 1 || (result.Operation != "describe" && result.Operation != "issue") {
+	if typed.Decode(&result) != nil || result.Version != 1 || (result.Operation != "describe" && result.Operation != "issue" && result.Operation != "renewal-info") {
 		return Request{}, errors.New("Invalid issuer request schema")
 	}
 	if err = validateHTTPS(result.Directory); err != nil {
@@ -105,6 +106,9 @@ func DecodeRequest(input io.Reader) (Request, error) {
 		if p != "" && (!filepath.IsAbs(p) || filepath.Clean(p) != p) {
 			return Request{}, errors.New("Absolute trust file required")
 		}
+	}
+	if result.Operation == "renewal-info" && (!filepath.IsAbs(result.StateDirectory) || filepath.Clean(result.StateDirectory) != result.StateDirectory) {
+		return Request{}, errors.New("Absolute owned state path required")
 	}
 	if result.Operation == "issue" {
 		for _, p := range []string{result.StateDirectory, result.ChallengeSocket} {
