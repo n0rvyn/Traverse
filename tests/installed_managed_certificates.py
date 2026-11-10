@@ -203,7 +203,18 @@ def changed_schedule(state):
 
 
 def main():
-    assert os.getuid()==0 and Path('/.dockerenv').exists(), 'Only the explicit disposable package container can bind test443'
+    # The SDK diagnostic uses private mount/network/PID namespaces instead of
+    # Docker. Require evidence of every namespace transition and an isolated
+    # network before allowing the same low-port fixture there.
+    private_namespaces = all(
+        os.environ.get('TRAVERSE_TEST_ORIGINAL_'+kind.upper()+'_NS', '').startswith(kind+':[')
+        and os.readlink('/proc/self/ns/'+kind)!=os.environ['TRAVERSE_TEST_ORIGINAL_'+kind.upper()+'_NS']
+        for kind in ('mnt','net','pid'))
+    if private_namespaces:
+        interfaces = {line.split(':',1)[0].strip() for line in Path('/proc/net/dev').read_text().splitlines()[2:]}
+        assert interfaces <= {'lo','traverse-test0'} and 'lo' in interfaces
+    assert os.getuid()==0 and (Path('/.dockerenv').exists() or private_namespaces), \
+        'Only an explicit disposable container or private mount/network/PID namespace can bind test443'
     assert Path('/proc/sys/net/ipv4/ip_unprivileged_port_start').read_text().strip()=='1024'
     assert PEBBLE.is_file()
     reports = []
@@ -289,6 +300,7 @@ def main():
                     pending_before = (state/'pending.json').read_bytes()
                     account_before = (state/'account.json').read_bytes()
                     with socket.socket() as conflict:
+                        conflict.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
                         conflict.bind(('127.0.0.1',443));conflict.listen()
                         desktop.start();wait(desktop.ready,'Cached custom host stopped because renewal443 was occupied',timeout=15)
                         assert (state/'bundle.pem').read_bytes()==before and ca.bridge.count()==count
@@ -310,6 +322,7 @@ def main():
             try:
                 desktop=Desktop(root,ca,app_port)
                 with socket.socket() as conflict:
+                    conflict.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
                     conflict.bind(('127.0.0.1',443));conflict.listen()
                     desktop.start();desktop.launch.wait(timeout=15)
                     assert desktop.launch.returncode!=0

@@ -332,9 +332,11 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         if (!data_home.is_absolute())
             throw std::runtime_error("Owner data directory must be absolute");
         data_home = std::filesystem::weakly_canonical(data_home);
+        // Isolation comes from the private instance directory. Short socket
+        // names leave room for XDG_RUNTIME_DIR within sockaddr_un's path limit.
         children.certificates = std::make_unique<CertificateManager>(
             settings.certificates, data_home.string(), binary_directory / "traverse-issuer",
-            (files.directory / "acme-validation.sock").string());
+            (files.directory / "v").string());
         settings.certificates.certificate = children.certificates->bundle();
         settings.certificates.private_key = children.certificates->bundle();
     }
@@ -459,7 +461,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
             frontend_arguments.end(),
             {"--acme-socket", settings.port == 443
                                   ? children.certificates->broker()
-                                  : (files.directory / "acme-application.sock").string()});
+                                  : (files.directory / "a").string()});
     bool proof_only = automatic && !children.certificates->application().available;
     auto launch_frontend = [&](bool proof) {
         auto arguments = frontend_arguments;
