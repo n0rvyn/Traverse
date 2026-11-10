@@ -255,7 +255,7 @@ if [ "$1" = 0 ]; then rm -f /opt/traverse/share/traverse/registry.bin; fi
         for file in sorted(args.sources.iterdir()):
             if file.is_file():archive.add(file,arcname=file.name,filter=normalize)
             elif file.name=='distribution-sources':archive.add(file,arcname=file.name,filter=normalize)
-        for file in [ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/build-issuer.py',ROOT/'packaging/fetch-sources.py',ROOT/'packaging/runtime-manifest.json',args.issuer_build]:
+        for file in [ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'patches/pebble-v2.10.1-authz-reuse-percent.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/build-issuer.py',ROOT/'packaging/fetch-sources.py',ROOT/'packaging/runtime-manifest.json',args.issuer_build]:
             archive.add(file,arcname=file.name,filter=normalize)
     artifacts=[p for p in out.iterdir() if p.is_file() and p.name!='SHA256SUMS']
     (out/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(artifacts)))

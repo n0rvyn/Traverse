@@ -63,6 +63,31 @@ def copy_notices(source,destination):
     if not found:raise ValueError('Missing issuer dependency license notice')
 
 
+def build_private_test_ca(go,tools,policy,environment):
+    test_policy=policy['privateTestCA']
+    test_source=tools/'private-ca';test_source.mkdir()
+    (test_source/'go.mod').write_text('module traverse.local/private-ca\n\ngo '+policy['goVersion']+'\n')
+    record=json.loads(command([go,'mod','download','-json',test_policy['module']+'@'+test_policy['version']],cwd=test_source,env=environment))
+    if record.get('Sum')!=test_policy['sum'] or record.get('GoModSum')!=test_policy['goModSum']:
+        raise ValueError('Private CA test source checksum mismatch')
+    # The pinned CA's zero-percent setting otherwise still reuses a valid
+    # authorization on draw0. Keep real fresh-validation assertions strict.
+    # Patch only a fresh owned copy, never the verified module cache.
+    patched_source=tools/'private-ca-source'
+    shutil.copytree(record['Dir'],patched_source,copy_function=shutil.copyfile)
+    for directory in [patched_source,*[p for p in patched_source.rglob('*') if p.is_dir()]]:
+        directory.chmod((directory.stat().st_mode&0o777)|0o200)
+    ca_patch=ROOT/'patches/pebble-v2.10.1-authz-reuse-percent.patch'
+    command(['patch','--forward','-p1','-i',ca_patch],cwd=patched_source,env=environment)
+    command([go,'build','-mod=readonly','-buildvcs=false','-trimpath','-o',tools/'pebble','./cmd/pebble'],cwd=patched_source,env=environment)
+    private_ca_build={'module':test_policy['module'],'version':test_policy['version'],
+                      'originalModuleSum':record['Sum'],'originalGoModSum':record['GoModSum'],
+                      'patchSha256':hashlib.sha256(ca_patch.read_bytes()).hexdigest(),
+                      'binarySha256':hashlib.sha256((tools/'pebble').read_bytes()).hexdigest(),
+                      'runtimeInstalled':False}
+    return private_ca_build
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work',type=Path,required=True)
@@ -135,15 +160,11 @@ def main():
               'sourceArchiveSha256':hashlib.sha256((sources/'certificate-issuer-sources.tar.gz').read_bytes()).hexdigest(),
               'binarySha256':hashlib.sha256(destination.read_bytes()).hexdigest(),'cgoEnabled':False,'static':True}
     (work/'issuer-build.json').write_text(json.dumps(metadata,indent=2)+'\n')
+    private_ca_build=None
     if args.test_ca:
-        test_policy=policy['privateTestCA']
-        test_source=tools/'private-ca';test_source.mkdir()
-        (test_source/'go.mod').write_text('module traverse.local/private-ca\n\ngo '+policy['goVersion']+'\n')
-        record=json.loads(command([go,'mod','download','-json',test_policy['module']+'@'+test_policy['version']],cwd=test_source,env=environment))
-        if record.get('Sum')!=test_policy['sum'] or record.get('GoModSum')!=test_policy['goModSum']:
-            raise ValueError('Private CA test source checksum mismatch')
-        command([go,'build','-mod=readonly','-buildvcs=false','-trimpath','-o',tools/'pebble','./cmd/pebble'],cwd=record['Dir'],env=environment)
-    print(json.dumps({'issuerBuild':metadata,'architecture':architecture}))
+        private_ca_build=build_private_test_ca(go,tools,policy,environment)
+        (work/'private-ca-build.json').write_text(json.dumps(private_ca_build,indent=2)+'\n')
+    print(json.dumps({'issuerBuild':metadata,'architecture':architecture,'privateTestCA':private_ca_build}))
 
 
 if __name__=='__main__':main()

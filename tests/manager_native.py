@@ -141,7 +141,17 @@ def main():
                 second = event(lambda value: value.get('managerGeneration')==2 and value.get('available') and value.get('fingerprint')!=original and
                                value.get('frontendFingerprint')==value.get('fingerprint') and not value.get('publicationUncertain'),
                                'due persisted schedule renewed and admitted actual material')
-                assert second['frontendRevision']>first['frontendRevision'] and ca.bridge.count()>validations
+                renewal_observation = {
+                    'firstFrontendRevision': first['frontendRevision'],
+                    'secondFrontendRevision': second['frontendRevision'],
+                    'validationAttemptsBefore': validations,
+                    'validationAttemptsAfter': ca.bridge.count(),
+                    'firstObservedMaterialMatchesHeldTls': first['fingerprint']==original,
+                    'secondMaterialDiffersFromHeldTls': second['fingerprint']!=original,
+                    'secondFrontendMatchesMaterial': second['frontendFingerprint']==second['fingerprint'],
+                }
+                assert second['frontendRevision']>first['frontendRevision'], renewal_observation
+                assert renewal_observation['validationAttemptsAfter']>validations, renewal_observation
                 request(held)
                 assert hashlib.sha256(held.getpeercert(binary_form=True)).hexdigest()==original
                 with open_application() as fresh:
