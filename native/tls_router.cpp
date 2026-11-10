@@ -163,6 +163,7 @@ struct TlsRouter::Impl {
         if (state->admission != Admission::Undecided && state->admission != route)
             return SSL_CLIENT_HELLO_ERROR;
         if (!acme) {
+            if (owner.config.challenge_only) return SSL_CLIENT_HELLO_ERROR;
             if (!state->application || !state->application->valid_now()) return SSL_CLIENT_HELLO_ERROR;
             state->admission = Admission::Application;
             return SSL_CLIENT_HELLO_SUCCESS;
@@ -195,9 +196,11 @@ struct TlsRouter::Impl {
     }
 
     explicit Impl(const TlsRouterConfig &settings) : config(settings) {
-        if (!config.http_port || !config.turn_port)
+        if (!config.challenge_only && (!config.http_port || !config.turn_port))
             throw std::runtime_error("Backend ports required");
-        if (config.allow_certificate_bootstrap &&
+        if (config.challenge_only && (config.acme_socket.empty() || config.expected_host.empty()))
+            throw std::runtime_error("Challenge-only listener requires an owned challenge broker and domain");
+        if (!config.challenge_only && config.allow_certificate_bootstrap &&
             (config.acme_socket.empty() || config.expected_host.empty() ||
              config.certificate.empty() || config.private_key.empty()))
             throw std::runtime_error("Automatic certificate bootstrap requires an owned challenge broker, domain and managed paths");
@@ -209,7 +212,7 @@ struct TlsRouter::Impl {
                 throw std::runtime_error("Cannot prepare certificate bootstrap context");
             SSL_CTX_set_client_hello_cb(bootstrap.get(), client_hello, this);
         }
-        certificates = std::make_unique<TlsCertificates>(
+        if (!config.challenge_only) certificates = std::make_unique<TlsCertificates>(
             TlsCertificateConfig{config.certificate, config.private_key, config.expected_host,
                                  config.ca_file, config.ca_directory, config.allow_certificate_bootstrap},
             [this](SSL_CTX *context) {
@@ -314,7 +317,7 @@ struct TlsRouter::Impl {
     }
     void serve(Connection &connection) {
         auto deadline = Clock::now() + std::chrono::seconds(10);
-        auto certificate = certificates->context();
+        auto certificate = certificates ? certificates->context() : nullptr;
         if (!certificate && !challenges)
             return;
         Handshake state;
@@ -338,6 +341,7 @@ struct TlsRouter::Impl {
                     SSL_shutdown(ssl.get());
                     return;
                 }
+                if (config.challenge_only) return;
                 break;
             }
             int error = SSL_get_error(ssl.get(), result);
@@ -475,9 +479,9 @@ void TlsRouter::stop() {
     impl->stop();
 }
 bool TlsRouter::refresh_certificate(bool force) {
-    return impl->certificates->refresh(force);
+    return impl->certificates && impl->certificates->refresh(force);
 }
 TlsCertificateStatus TlsRouter::certificate_status() const {
-    return impl->certificates->status();
+    return impl->certificates ? impl->certificates->status() : TlsCertificateStatus{};
 }
 } // namespace traverse

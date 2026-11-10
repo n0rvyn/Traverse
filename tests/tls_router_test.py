@@ -98,12 +98,14 @@ class RouterTests(unittest.TestCase):
         self.http, self.turn = Witness(b'H:'), Witness(b'T:')
         self.start(self.http.server_address[1], self.turn.server_address[1])
 
-    def start(self, http, turn, host='127.0.0.1', extra=()):
+    def start(self, http, turn, host='127.0.0.1', extra=(), include_application=True):
         self.host = host
+        application = (['--http-port', str(http), '--turn-port', str(turn),
+                        '--cert', str(self.cert), '--key', str(self.key)]
+                       if include_application else [])
         self.process = subprocess.Popen([BINARY, '--host', host, '--port', '0',
-                                         '--http-port', str(http), '--turn-port', str(turn),
                                          '--supervisor-pid', str(os.getpid()),
-                                         '--cert', str(self.cert), '--key', str(self.key), *extra],
+                                         *application, *extra],
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert select.select([self.process.stdout], [], [], 5)[0], 'Router startup did not finish'
         line = self.process.stdout.readline()
@@ -334,7 +336,7 @@ class RouterTests(unittest.TestCase):
         finally:
             raw.close()
 
-    def challenge_start(self, bootstrap=False):
+    def challenge_start(self, bootstrap=False, challenge_only=False, include_application=True):
         self.stop()
         root = Path(self.directory.name)
         self.acme_socket = root/('acme-'+str(time.monotonic_ns())+'.sock')
@@ -342,10 +344,22 @@ class RouterTests(unittest.TestCase):
         if bootstrap:
             self.cert = root/('managed-'+str(time.monotonic_ns())+'.pem')
             self.key = root/('managed-'+str(time.monotonic_ns())+'.key')
-        self.start(self.http.server_address[1], self.turn.server_address[1], extra=[
+        extra=[
             '--expected-domain', 'localhost', '--trust-file', str(self.issuer_cert), '--trust-directory', '',
             '--acme-socket', str(self.acme_socket), '--status-file', str(self.acme_status),
-            '--certificate-bootstrap', 'true' if bootstrap else 'false'])
+            '--certificate-bootstrap', 'true' if bootstrap else 'false']
+        if challenge_only:extra += ['--challenge-only', 'true']
+        self.start(self.http.server_address[1], self.turn.server_address[1], extra=extra,
+                   include_application=include_application)
+
+    def challenge_refresh(self):
+        previous = self.acme_status.stat().st_mtime_ns
+        self.process.send_signal(signal.SIGHUP)
+        deadline = time.monotonic()+3
+        while self.acme_status.stat().st_mtime_ns == previous:
+            self.assertIsNone(self.process.poll())
+            self.assertLess(time.monotonic(), deadline, 'Refresh status was not published')
+            time.sleep(.01)
 
     def challenge_lease(self, seconds=60):
         digest = hashlib.sha256(b'synthetic-local-challenge-not-a-real-account').digest()
@@ -410,6 +424,98 @@ class RouterTests(unittest.TestCase):
             self.release_challenge(peer)
         with self.assertRaises((ssl.SSLError,ConnectionResetError)):
             with self.tls(probe):pass
+
+    def test_acme_challenge_only_rejects_application_with_valid_material(self):
+        # Positive controls prove both backend witnesses count real connections.
+        for payload, marker in ((b'GET / HTTP/1.1\r\n\r\n', b'H:'),
+                                (b'\x00\x01\x00\x00\x21\x12\xa4\x42'+b'\x11'*12, b'T:')):
+            with self.tls() as application:
+                application.sendall(payload);self.assertEqual(receive(application, 2), marker)
+        before=(self.http.accepted,self.turn.accepted)
+        self.assertGreater(before[0],0);self.assertGreater(before[1],0)
+        self.challenge_start(challenge_only=True)
+        original_cert,original_key=self.cert.read_bytes(),self.key.read_bytes()
+        try:
+            peer,digest=self.challenge_lease()
+            with peer:
+                for phase in ('initial', 'after-material-replacement'):
+                    if phase=='after-material-replacement':
+                        certificate,key=self.leaf('proof-only-unrelated-material')
+                        self.replacement(certificate,key);self.challenge_refresh()
+                    for version in (ssl.TLSVersion.TLSv1_2,ssl.TLSVersion.TLSv1_3):
+                        with self.tls(self.challenge_context(version=version)) as proof:
+                            self.assert_challenge_der(proof,digest)
+                            self.assertEqual(proof.recv(1),b'')
+                        normal=ssl.create_default_context(cafile=str(self.issuer_cert))
+                        normal.minimum_version=normal.maximum_version=version
+                        normal.set_alpn_protocols(['http/1.1'])
+                        with self.assertRaises((ssl.SSLError,ConnectionResetError),
+                                              msg='Challenge-only listener admitted ordinary application TLS'):
+                            with self.tls(normal):pass
+                    self.assertEqual((self.http.accepted,self.turn.accepted),before)
+                status=json.loads(self.acme_status.read_text())
+                self.assertFalse(status['available']);self.assertEqual(status['revision'],0)
+                self.release_challenge(peer)
+        finally:
+            self.replacement(original_cert,original_key)
+
+    def test_acme_challenge_only_has_no_application_material_or_backend_dependency(self):
+        original_cert, original_key = self.cert.read_bytes(), self.key.read_bytes()
+        try:
+            for material,include_application in (('absent',False),('absent',True),('malformed',True),('valid',True)):
+                with self.subTest(material=material,include_application=include_application):
+                    self.stop()
+                    if material == 'absent':
+                        self.cert.unlink(missing_ok=True);self.key.unlink(missing_ok=True)
+                    elif material == 'malformed':
+                        self.replacement(b'not a certificate', b'not a private key')
+                    else:
+                        self.replacement(original_cert, original_key)
+                    self.challenge_start(challenge_only=True, include_application=include_application)
+                    probe=self.challenge_context()
+                    with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                        with self.tls(probe):pass
+                    peer,digest=self.challenge_lease()
+                    with peer:
+                        for version in (ssl.TLSVersion.TLSv1_2,ssl.TLSVersion.TLSv1_3):
+                            with self.tls(self.challenge_context(version=version)) as proof:
+                                self.assert_challenge_der(proof,digest)
+                                try:
+                                    proof.sendall(b'GET / HTTP/1.1\r\n\r\n');self.assertEqual(proof.recv(1),b'')
+                                except (ssl.SSLError,ConnectionResetError,BrokenPipeError):pass
+                            for protocols in ((),('http/1.1',),('acme-tls/1','http/1.1')):
+                                with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                                    with self.tls(self.challenge_context(protocols,version)):pass
+                        for hostname in (None,'wrong.invalid'):
+                            with socket.create_connection((self.host,self.port),timeout=3) as raw:
+                                with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                                    with probe.wrap_socket(raw,server_hostname=hostname):pass
+                        self.challenge_refresh()
+                        snapshot=json.loads(self.acme_status.read_text())
+                        self.assertEqual((snapshot['revision'],snapshot['fingerprint'],snapshot['validFrom'],
+                                          snapshot['validUntil'],snapshot['available']), (0,'',0,0,False))
+                        self.release_challenge(peer)
+                    with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                        with self.tls(probe):pass
+                    self.assertEqual((self.http.accepted,self.turn.accepted),(0,0))
+        finally:
+            self.replacement(original_cert,original_key)
+
+    def test_acme_challenge_only_requires_strict_mode_broker_and_domain(self):
+        base=[BINARY,'--host','127.0.0.1','--port','0','--challenge-only','true']
+        cases=[([], 'owned challenge broker'),
+               (['--expected-domain','localhost'], 'owned challenge broker'),
+               (['--acme-socket',str(Path(self.directory.name)/'invalid.sock')], 'owned challenge broker'),
+               (['--challenge-only','false'], 'Duplicate option')]
+        for arguments,message in cases:
+            with self.subTest(arguments=arguments):
+                result=subprocess.run(base+arguments,capture_output=True,text=True,timeout=3)
+                self.assertNotEqual(result.returncode,0);self.assertIn(message,result.stderr)
+        for value in ('yes','TRUE','1',''):
+            result=subprocess.run(base[:-1]+[value],capture_output=True,text=True,timeout=3)
+            self.assertNotEqual(result.returncode,0);self.assertIn('Invalid challenge-only mode',result.stderr)
+        result=subprocess.run(base[:-1],capture_output=True,text=True,timeout=3)
+        self.assertNotEqual(result.returncode,0);self.assertIn('Expected option value',result.stderr)
 
     def test_acme_bootstrap_admits_only_leased_challenge_then_promotes(self):
         self.challenge_start(bootstrap=True)

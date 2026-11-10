@@ -241,6 +241,49 @@ def main():
                                                capture_output=True, text=True, timeout=10, **child_options(hostile))
                     assert duplicate.returncode and 'Cannot bind TLS listener' in duplicate.stderr
             assert frontend.returncode == 0
+            proof_args = ['--host', '127.0.0.1', '--port', '443', '--challenge-only', 'true',
+                          '--expected-domain', 'localhost', '--acme-socket', str(runtime/'proof.sock'),
+                          '--status-file', str(runtime/'proof-status.json')]
+            with running('frontend', proof_args, directory, hostile) as validation:
+                deadline = time.monotonic()+10
+                while not (runtime/'proof-status.json').exists():
+                    assert validation.poll() is None, 'Validation-only frontend exited'
+                    assert time.monotonic()<deadline, 'Validation-only frontend failed readiness'
+                    time.sleep(.02)
+                with challenge_owner(runtime/'proof.sock'), socket.create_connection(('127.0.0.1',443),timeout=2) as pending:
+                    proof_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    proof_context.check_hostname=False;proof_context.verify_mode=ssl.CERT_NONE
+                    proof_context.set_alpn_protocols(['acme-tls/1'])
+                    for version in (ssl.TLSVersion.TLSv1_2,ssl.TLSVersion.TLSv1_3):
+                        proof_context.minimum_version=proof_context.maximum_version=version
+                        with socket.create_connection(('127.0.0.1',443),timeout=2) as raw:
+                            with proof_context.wrap_socket(raw,server_hostname='localhost') as proof:
+                                assert proof.selected_alpn_protocol()=='acme-tls/1'
+                                extension=bytes.fromhex('06082b0601050507011f0101ff04220420')+bytes(range(32))
+                                assert extension in proof.getpeercert(binary_form=True)
+                                assert proof.recv(1)==b''
+                        for protocols in ([],['http/1.1'],['acme-tls/1','http/1.1']):
+                            probe=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                            probe.check_hostname=False;probe.verify_mode=ssl.CERT_NONE
+                            probe.minimum_version=probe.maximum_version=version
+                            probe.set_alpn_protocols(protocols)
+                            with socket.create_connection(('127.0.0.1',443),timeout=2) as raw:
+                                try:
+                                    with probe.wrap_socket(raw,server_hostname='localhost'):
+                                        raise AssertionError('Validation-only443 admitted application TLS')
+                                except (ssl.SSLError,ConnectionResetError):pass
+                    proof_threads=verify_threads(validation.pid,0)
+                    assert proof_threads>=5, 'Live validation listener/lease/handshake threads were not observed'
+                    snapshot=json.loads((runtime/'proof-status.json').read_text())
+                    assert snapshot['frontendPid']==validation.pid
+                    assert (snapshot['revision'],snapshot['fingerprint'],snapshot['validFrom'],
+                            snapshot['validUntil'],snapshot['available'])==(0,'',0,0,False)
+                    duplicate=subprocess.run([str(HELPER),'frontend',*proof_args,
+                        '--supervisor-pid',str(os.getpid())],capture_output=True,text=True,
+                        timeout=10,**child_options(hostile))
+                    assert duplicate.returncode and 'Cannot bind TLS listener' in duplicate.stderr
+                    verify_threads(service.pid,BIND)
+            assert validation.returncode==0
         assert service.returncode == 0
         assert (directory/'evil-registry').read_bytes() == b'Untrusted registry must not be read'
         print(json.dumps({'sameUidGid': UID, 'negativeTcpUdp443': 'permission denied',
@@ -250,6 +293,8 @@ def main():
                           'explicitTrustSurvivesClearedEnvironment': True,
                           'certificateRefreshPreservesExistingTlsAndZeroCaps': True,
                           'challengeBrokerAndLiveIssuerThreadsWithoutCaps': True,
+                          'validationOnlyTcp443': 'real TLS1.2+1.3 proof; application TLS rejected',
+                          'validationOnlyThreadsWithoutCaps': proof_threads,
                           'boundingSet': 'inherited kernel bound; NoNewPrivs=1 prevents exec privilege gains'}))
 
 
