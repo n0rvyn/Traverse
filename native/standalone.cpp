@@ -3,6 +3,7 @@
 #include "child.hpp"
 #include "host_channel.hpp"
 #include "owner_state.hpp"
+#include "private_socket_directory.hpp"
 #include "tls_certificate.hpp"
 #include <arpa/inet.h>
 #include <ctime>
@@ -322,6 +323,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                HostSupervisor *owner) {
     auto settings = requested;
     PrivateFiles files(runtime);
+    PrivateSocketDirectory sockets(runtime);
     auto socket = (runtime / "adapter.sock").string();
     Ipc ipc(socket);
     Sharing children(socket);
@@ -353,7 +355,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                 }
                 if (service_ready && children.service) {
                     try {
-                        state["peer"] = read_owner_state((files.directory / "s").string(),
+                        state["peer"] = read_owner_state((sockets.directory / "s").string(),
                                                          children.service->id());
                     } catch (const std::exception &) {
                     }
@@ -412,11 +414,10 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         if (!data_home.is_absolute())
             throw std::runtime_error("Owner data directory must be absolute");
         data_home = std::filesystem::weakly_canonical(data_home);
-        // Isolation comes from the private instance directory. Short socket
-        // names leave room for XDG_RUNTIME_DIR within sockaddr_un's path limit.
+        // Keep broker sockets in the short private socket directory too.
         children.certificates = std::make_unique<CertificateManager>(
             settings.certificates, data_home.string(), binary_directory / "traverse-issuer",
-            (files.directory / "v").string());
+            (sockets.directory / "v").string());
         settings.certificates.certificate = children.certificates->bundle();
         settings.certificates.private_key = children.certificates->bundle();
     }
@@ -512,7 +513,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                               "--web",
                               (prefix / "share/traverse/web").string(),
                               "--owner-socket",
-                              (files.directory / "s").string(),
+                              (sockets.directory / "s").string(),
                               "--base-path",
                               settings.base_path,
                               "--udp-port",
@@ -526,7 +527,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                     (settings.base_path == "/" ? "" : settings.base_path);
     if (children.service->ready_line(pump_owner) != expected)
         throw std::runtime_error("Internal HTTP service readiness response invalid");
-    read_owner_state((files.directory / "s").string(), children.service->id());
+    read_owner_state((sockets.directory / "s").string(), children.service->id());
     service_ready = true;
     host.stage("tls");
     std::vector<std::string> frontend_arguments = {"--host",
@@ -578,7 +579,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
             frontend_arguments.end(),
             {"--acme-socket", settings.port == 443
                                   ? children.certificates->broker()
-                                  : (files.directory / "a").string()});
+                                  : (sockets.directory / "a").string()});
     bool proof_only = automatic && !children.certificates->application().available;
     auto launch_frontend = [&](bool proof) {
         auto arguments = frontend_arguments;

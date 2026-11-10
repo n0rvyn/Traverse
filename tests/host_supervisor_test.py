@@ -185,6 +185,28 @@ def main():
         with tempfile.TemporaryDirectory(prefix='traverse-host-owner-') as temporary:
             root=Path(temporary);root.chmod(0o755)
             ca=PrivateCA(root,pebble,443);desktop=Desktop(root,ca,443);owner=None
+            # The previous adapter path fits, but instance-<32 hex>/s would
+            # exceed Linux sun_path. Exercise the real launcher at that bound.
+            component_length=70-len(str(desktop.home))-len('/traverse')-1
+            assert component_length>0
+            desktop.runtime=desktop.home/('r'*component_length)
+            desktop.runtime.mkdir(mode=0o700);os.chown(desktop.runtime,65534,65534)
+            desktop.env['XDG_RUNTIME_DIR']=str(desktop.runtime)
+            desktop.adapter=desktop.runtime/'traverse/adapter.sock'
+            assert len(str(desktop.adapter).encode())==83
+            assert len(str(desktop.runtime/'traverse'/('instance-'+'0'*32)/'s').encode())==114
+            supplied=ending=='eof'
+            if supplied:
+                # Independent supplied identity; trust exists only in this
+                # fixture's process environment, never in a system store.
+                cert,key=root/'supplied.pem',desktop.home/'supplied.key'
+                subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes',
+                    '-days','1','-subj','/CN='+DOMAIN,'-addext','subjectAltName=DNS:'+DOMAIN,
+                    '-keyout',str(key),'-out',str(cert)],check=True,capture_output=True)
+                cert.chmod(0o644);key.chmod(0o600);os.chown(key,65534,65534)
+                config=json.loads(desktop.path.read_text());config.pop('certificateSettings')
+                config.update(certificate=str(cert),privateKey=str(key))
+                desktop.path.write_text(json.dumps(config));desktop.env['SSL_CERT_FILE']=str(cert)
             baseline=prefix_processes()
             try:
                 owner=OwnerFixture(desktop)
@@ -194,8 +216,8 @@ def main():
                     return value if value.get('phase')=='ready' and value.get('localHttps',{}).get('status')=='passed' else None
                 wait(ready,'Actual owner channel did not reach trusted sharing readiness',timeout=45)
                 first=owner.call('status');assert first['authority']['codeStatus']=='available'
-                assert len(list(desktop.data.glob('traverse/certificates/*/account-key.pem')))==1
-                assert ca.bridge.count()>0
+                assert len(list(desktop.data.glob('traverse/certificates/*/account-key.pem')))==(0 if supplied else 1)
+                assert (ca.bridge.count()==0) if supplied else (ca.bridge.count()>0)
                 assert first['peer']['rtcState']=='none' and not first['peer']['controlOpen']
                 assert owner.call('new-code')['ok']
                 assert owner.call('public-boundaries')=={'publicTlsOwnerRoutesDenied':16,'authorizedStatsCodeFree':False}
@@ -222,6 +244,8 @@ def main():
                 wait(lambda:not any(alive(pid) for pid in owned),'Owned child survived host stop/EOF/death',timeout=12)
                 wait(lambda:not any(alive(pid) for pid in prefix_processes()-baseline),'Untracked owned native descendant survived',timeout=5)
                 reports.append({'ending':ending,'actualOwnerUid':65534,'trustedHttps':True,
+                    'longRuntimeBaseBytes':70,'priorInstanceSocketBytes':114,
+                    'certificateMode':'supplied' if supplied else 'automatic',
                     'safeRefreshPreservesController':True,'pairedWithoutRtcNeverConnected':True,
                     'publicTlsOwnerRoutesDeniedBeforeAndAfterPairing':True,'authorizedStatsCodeFree':True,
                     'ownerDescriptorNotInherited':True,'inputReleasedAndAllChildrenStopped':True})
@@ -240,7 +264,7 @@ def main():
             shutil.copyfile(os.environ['TRAVERSE_TEST_DELAYED_SERVICE'],service);service.chmod(0o755)
             gate.write_text('owned synthetic startup gate');gate.chmod(0o644)
             owner=OwnerFixture(desktop)
-            wait(lambda: bool(list((desktop.runtime/'traverse').glob('instance-*/s.waiting'))),
+            wait(lambda: bool(list((desktop.runtime/'traverse').glob('o-*/s.waiting'))),
                 'Actual delayed child did not enter its readiness wait',timeout=15)
             before=owner.call('status');assert before['stage']=='service' and before['phase']=='starting'
             assert before['localHttps']['status']=='pending' and not before['issuer']['operationActive']
