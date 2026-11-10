@@ -8,6 +8,8 @@ struct TlsRouterConfig {
     std::string address = "127.0.0.1", certificate, private_key;
     std::string expected_host;
     std::optional<std::string> ca_file, ca_directory;
+    std::string acme_socket;
+    bool allow_certificate_bootstrap = false;
     unsigned short port = 0, http_port = 0, turn_port = 0;
 };
 // Fixed loopback backends; routing never uses a client-supplied destination.

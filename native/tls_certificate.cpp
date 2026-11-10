@@ -195,9 +195,15 @@ struct TlsCertificates::Impl {
     std::string error;
     Impl(const TlsCertificateConfig &settings, std::function<void(SSL_CTX *)> setup)
         : config(settings), configure(std::move(setup)), observed(file_stamp(settings)) {
-        active = load(config, configure);
-        if (file_stamp(config) != observed)
-            throw std::runtime_error("Certificate files changed during initial loading");
+        try {
+            active = load(config, configure);
+            if (file_stamp(config) != observed)
+                throw std::runtime_error("Certificate files changed during initial loading");
+        } catch (const std::exception &failure) {
+            if (!config.allow_initially_unavailable) throw;
+            active.reset(); revision = 0; error = failure.what();
+            ERR_clear_error();
+        }
     }
 };
 TlsCertificates::TlsCertificates(const TlsCertificateConfig &config,
@@ -232,6 +238,7 @@ std::shared_ptr<const TlsCertificateContext> TlsCertificates::context() const {
 TlsCertificateStatus TlsCertificates::status() const {
     std::lock_guard lock(impl->mutex);
     auto active = std::atomic_load(&impl->active);
+    if (!active) return {0, "", impl->error, 0, 0, false};
     return {impl->revision, active->fingerprint, impl->error,
             active->valid_from, active->valid_until, active->valid_now()};
 }
@@ -299,7 +306,8 @@ void write_tls_certificate_status(const std::string &name, const TlsCertificateS
     }
 }
 
-TlsCertificateStatus read_tls_certificate_status(const std::string &name, int expected_pid) {
+TlsCertificateStatus read_tls_certificate_status(const std::string &name, int expected_pid,
+                                                 bool allow_unprovisioned) {
     if (expected_pid <= 0)
         throw std::runtime_error("Certificate frontend identity unavailable");
     std::filesystem::path path(name);
@@ -347,15 +355,21 @@ TlsCertificateStatus read_tls_certificate_status(const std::string &name, int ex
         if (observed < 0 || observed > now || now - observed > 15000)
             throw std::runtime_error("Certificate status is stale");
         if (!value.at("revision").is_number_unsigned() ||
-            !value.at("revision").get<std::uint64_t>() ||
             !value.at("fingerprint").is_string() || !value.at("reloadError").is_string() ||
             !value.at("available").is_boolean())
             throw std::runtime_error("Certificate status fields invalid");
         auto fingerprint = value.at("fingerprint").get<std::string>();
+        auto revision = value.at("revision").get<std::uint64_t>();
+        auto from = integer("validFrom"), until = integer("validUntil");
+        if (!revision) {
+            if (!allow_unprovisioned || value.at("available").get<bool>() ||
+                !fingerprint.empty() || from != 0 || until != 0)
+                throw std::runtime_error("Certificate status absence tuple invalid");
+            return {0, "", value.at("reloadError").get<std::string>(), 0, 0, false};
+        }
         if (fingerprint.size() != 64 ||
             fingerprint.find_first_not_of("0123456789abcdef") != std::string::npos)
             throw std::runtime_error("Certificate status fingerprint invalid");
-        auto from = integer("validFrom"), until = integer("validUntil");
         if (from >= until)
             throw std::runtime_error("Certificate status validity invalid");
         return {value.at("revision").get<std::uint64_t>(), fingerprint,

@@ -89,18 +89,21 @@ class Sharing {
 class CertificateObserver {
     std::optional<TlsCertificateStatus> previous;
     std::string metadata_error;
+    bool allow_unprovisioned;
 
   public:
+    explicit CertificateObserver(bool automatic = false) : allow_unprovisioned(automatic) {}
     void observe(const std::string &path, pid_t frontend) {
         try {
-            auto current = read_tls_certificate_status(path, frontend);
+            auto current = read_tls_certificate_status(path, frontend, allow_unprovisioned);
             if (!metadata_error.empty())
                 std::cerr << "Traverse certificate: status restored\n";
             metadata_error.clear();
             if (!current.available) {
                 if (!previous || previous->available) {
                     auto now = std::time(nullptr);
-                    auto reason = now == static_cast<std::time_t>(-1) ? "unavailable" :
+                    auto reason = !current.revision ? "not provisioned" :
+                        now == static_cast<std::time_t>(-1) ? "unavailable" :
                         now >= current.valid_until ? "expired" :
                         now < current.valid_from ? "not yet valid" : "unavailable";
                     std::cerr << "Traverse certificate: " << reason
@@ -114,7 +117,8 @@ class CertificateObserver {
                 std::cerr << "Traverse certificate: renewal recovered; sharing continues\n";
             }
             if (!current.error.empty() && (!previous || current.error != previous->error))
-                std::cerr << "Traverse certificate: renewal rejected: " << current.error << '\n';
+                std::cerr << "Traverse certificate: " <<
+                    (current.revision ? "renewal rejected: " : "provisioning pending: ") << current.error << '\n';
             previous = std::move(current);
         } catch (const std::exception &error) {
             if (metadata_error != error.what())

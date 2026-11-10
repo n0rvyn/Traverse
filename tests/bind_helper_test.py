@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import signal
+import select
 from pathlib import Path
 import socket
 import ssl
@@ -75,6 +76,34 @@ def rejected(role, arguments, env):
     result = subprocess.run([str(HELPER), role, *arguments, '--supervisor-pid', str(os.getpid())],
                             capture_output=True, text=True, timeout=10, **child_options(env))
     assert result.returncode and 'Traverse binding helper:' in result.stderr, result
+
+
+@contextlib.contextmanager
+def challenge_owner(path):
+    # This issuer fixture runs as the real desktop UID, not the root observer.
+    code = '''import base64,json,socket,struct,sys,time
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(5);s.connect(sys.argv[1])
+def receive(n):
+ data=b''
+ while len(data)<n:
+  chunk=s.recv(n-len(data));assert chunk;data+=chunk
+ return data
+body=json.dumps({'version':1,'domain':'localhost','sha256':base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip('='),'expires':int(time.time())+60},separators=(',',':')).encode()
+s.sendall(struct.pack('!I',len(body))+body)
+assert json.loads(receive(struct.unpack('!I',receive(4))[0]))=={'ready':True}
+print('ready',flush=True);sys.stdin.read();s.shutdown(socket.SHUT_WR);assert s.recv(1)==b'';s.close()
+'''
+    process=subprocess.Popen(['python3','-c',code,str(path)],stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,**child_options())
+    try:
+        assert select.select([process.stdout],[],[],5)[0] and process.stdout.readline().strip()=='ready', 'Owned challenge lease failed'
+        yield process
+    finally:
+        process.stdin.close()
+        try:process.wait(timeout=7)
+        except subprocess.TimeoutExpired:
+            process.kill();process.wait();raise AssertionError('Owned issuer fixture survived cleanup')
+        assert process.returncode==0,process.stderr.read()
 
 
 def main():
@@ -158,7 +187,8 @@ def main():
             frontend_args = ['--host', '127.0.0.1', '--port', '443', '--http-port', str(backend),
                              '--turn-port', str(port()), '--cert', str(cert), '--key', str(key),
                              '--expected-domain', 'localhost', '--trust-file', str(cert),
-                             '--trust-directory', '', '--status-file', str(runtime/'tls-status.json')]
+                             '--trust-directory', '', '--status-file', str(runtime/'tls-status.json'),
+                             '--acme-socket', str(runtime/'acme.sock')]
             with running('frontend', frontend_args, directory, hostile) as frontend:
                 context = ssl.create_default_context(cafile=str(cert))
                 deadline = time.monotonic()+10
@@ -171,14 +201,14 @@ def main():
                     except OSError:
                         assert time.monotonic() < deadline, 'Frontend failed readiness'
                         time.sleep(.02)
-                with stream:
+                with stream, challenge_owner(runtime/'acme.sock'):
                     # A live TLS worker must inherit zero caps, not its pre-bind parent state.
                     stream.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n')
                     response = http.client.HTTPResponse(stream);response.begin()
                     assert response.status == 200
                     response.read();response.close()
                     frontend_threads = verify_threads(frontend.pid, 0)
-                    assert frontend_threads >= 3
+                    assert frontend_threads >= 5, 'TLS and live issuer workers were not observed'
                     snapshot = json.loads((runtime/'tls-status.json').read_text())
                     assert snapshot['frontendPid'] == frontend.pid and snapshot['available']
                     assert (runtime/'tls-status.json').stat().st_uid == UID
@@ -219,6 +249,7 @@ def main():
                           'untrustedFilesAndMissingCapabilityRejected': True,
                           'explicitTrustSurvivesClearedEnvironment': True,
                           'certificateRefreshPreservesExistingTlsAndZeroCaps': True,
+                          'challengeBrokerAndLiveIssuerThreadsWithoutCaps': True,
                           'boundingSet': 'inherited kernel bound; NoNewPrivs=1 prevents exec privilege gains'}))
 
 

@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
                 key != "--turn-port" && key != "--cert" && key != "--key" &&
                 key != "--expected-domain" && key != "--trust-file" && key != "--trust-directory" &&
                 key != "--status-file" &&
+                key != "--acme-socket" && key != "--certificate-bootstrap" &&
                 key != "--supervisor-pid")
                 throw std::runtime_error("Unknown option");
             if (!args.emplace(key, argv[i + 1]).second)
@@ -64,6 +65,15 @@ int main(int argc, char **argv) {
         if (args.count("--expected-domain")) config.expected_host = args.at("--expected-domain");
         if (args.count("--trust-file")) config.ca_file = args.at("--trust-file");
         if (args.count("--trust-directory")) config.ca_directory = args.at("--trust-directory");
+        if (args.count("--acme-socket")) {
+            config.acme_socket = args.at("--acme-socket");
+            if (config.acme_socket.empty()) throw std::runtime_error("Certificate challenge socket required");
+        }
+        if (args.count("--certificate-bootstrap")) {
+            const auto &value = args.at("--certificate-bootstrap");
+            if (value != "true" && value != "false") throw std::runtime_error("Invalid certificate bootstrap mode");
+            config.allow_certificate_bootstrap = value == "true";
+        }
         traverse::TlsRouter router(config);
         auto status_file = args.count("--status-file") ? args.at("--status-file") : std::string{};
         if (args.count("--status-file") && status_file.empty())
@@ -83,8 +93,8 @@ int main(int argc, char **argv) {
             }
             router.refresh_certificate(forced);
             auto status = router.certificate_status();
-            auto error = status.available ? status.error
-                                          : "Active certificate is expired or not yet valid";
+            auto error = status.available ? status.error :
+                status.revision ? "Active certificate is expired or not yet valid" : "Certificate not yet provisioned";
             if (error != previous_error) {
                 if (!error.empty()) std::cerr << "TLS certificate reload: " << error << '\n';
                 previous_error = error;

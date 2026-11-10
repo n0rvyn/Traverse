@@ -16,6 +16,7 @@ struct EndpointSettings {
     static EndpointSettings parse(const nlohmann::json &config,
                                   const std::string &default_display = "",
                                   const std::string &configuration_directory = "");
+    static std::string normalize_host(std::string host);
     static std::string normalize_base_path(const std::string &path);
     std::string public_url() const;
     std::string turns_url() const;

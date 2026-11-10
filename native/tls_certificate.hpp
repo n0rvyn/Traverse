@@ -10,6 +10,9 @@ namespace traverse {
 struct TlsCertificateConfig {
     std::string certificate, private_key, expected_host;
     std::optional<std::string> ca_file, ca_directory;
+    // Enabled only by the automatic-mode router with its owned challenge broker.
+    // Supplied-certificate callers keep strict startup by default.
+    bool allow_initially_unavailable = false;
 };
 struct TlsCertificateContext {
     std::shared_ptr<SSL_CTX> ssl;
@@ -38,5 +41,6 @@ class TlsCertificates {
 };
 // Per-instance owner-only snapshots. No certificate/key paths or credentials.
 void write_tls_certificate_status(const std::string &path, const TlsCertificateStatus &status);
-TlsCertificateStatus read_tls_certificate_status(const std::string &path, int expected_pid);
+TlsCertificateStatus read_tls_certificate_status(const std::string &path, int expected_pid,
+                                                 bool allow_unprovisioned = false);
 } // namespace traverse

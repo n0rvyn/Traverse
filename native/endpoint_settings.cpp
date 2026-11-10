@@ -39,7 +39,24 @@ void fields(const json &config, const std::vector<std::string> &allowed) {
         if (std::find(allowed.begin(), allowed.end(), it.key()) == allowed.end())
             throw std::runtime_error("Unknown configuration field: " + it.key());
 }
-std::string canonical_host(std::string host) {
+std::string uri_host(const std::string &host) {
+    return host.find(':') == std::string::npos ? host : "[" + host + "]";
+}
+bool chrome_restricted(unsigned port) {
+    // Chromium net/base/port_util.cc kRestrictedPorts, checked 2026-11-09.
+    // https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/base/port_util.cc
+    static constexpr unsigned ports[] = {
+        1,    7,    9,    11,   13,   15,   17,   19,   20,   21,   22,   23,   25,   37,
+        42,   43,   53,   69,   77,   79,   87,   95,   101,  102,  103,  104,  109,  110,
+        111,  113,  115,  117,  119,  123,  135,  137,  139,  143,  161,  179,  389,  427,
+        465,  512,  513,  514,  515,  526,  530,  531,  532,  540,  548,  554,  556,  563,
+        587,  601,  636,  989,  990,  993,  995,  1719, 1720, 1723, 2049, 3659, 4045, 5060,
+        5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080};
+    return std::find(std::begin(ports), std::end(ports), port) != std::end(ports);
+}
+} // namespace
+
+std::string EndpointSettings::normalize_host(std::string host) {
     if (host.empty())
         throw std::runtime_error("domain is required");
     bool bracketed = host.front() == '[' && host.back() == ']';
@@ -92,23 +109,6 @@ std::string canonical_host(std::string host) {
             "Domain would be interpreted as a noncanonical IPv4 address by Chrome");
     return host;
 }
-std::string uri_host(const std::string &host) {
-    return host.find(':') == std::string::npos ? host : "[" + host + "]";
-}
-bool chrome_restricted(unsigned port) {
-    // Chromium net/base/port_util.cc kRestrictedPorts, checked 2026-11-09.
-    // https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/base/port_util.cc
-    static constexpr unsigned ports[] = {
-        1,    7,    9,    11,   13,   15,   17,   19,   20,   21,   22,   23,   25,   37,
-        42,   43,   53,   69,   77,   79,   87,   95,   101,  102,  103,  104,  109,  110,
-        111,  113,  115,  117,  119,  123,  135,  137,  139,  143,  161,  179,  389,  427,
-        465,  512,  513,  514,  515,  526,  530,  531,  532,  540,  548,  554,  556,  563,
-        587,  601,  636,  989,  990,  993,  995,  1719, 1720, 1723, 2049, 3659, 4045, 5060,
-        5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080};
-    return std::find(std::begin(ports), std::end(ports), port) != std::end(ports);
-}
-} // namespace
-
 std::string EndpointSettings::normalize_base_path(const std::string &path) {
     if (path.empty() || path.front() != '/')
         throw std::runtime_error("basePath must start with /");
@@ -162,7 +162,7 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
             throw std::runtime_error("Unsupported schemaVersion");
         fields(config, {"schemaVersion", "domain", "port", "basePath", "certificate", "privateKey",
                         "display", "listenAddress"});
-        settings.domain = canonical_host(text(config, "domain"));
+        settings.domain = normalize_host(text(config, "domain"));
         settings.port = port_value(config, "port", 443);
         if (chrome_restricted(settings.port))
             throw std::runtime_error("Chrome blocks this HTTPS port; choose another port");

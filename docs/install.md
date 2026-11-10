@@ -14,6 +14,8 @@ Create your configuration from `/opt/traverse/share/traverse/config.example.json
 
 The standalone endpoint needs the chosen TCP and UDP port. TCP carries HTTPS and authenticated TURN/TLS fallback; direct WebRTC media uses UDP. Startup checks actual TCP/UDP binding availability and verifies local HTTPS trust and hostname before displaying readiness. It does not yet prove public reachability. A conflict fails without changing the existing service or choosing a different port. Integrated first-run host controls, external checks, certificate issuance and renewal scheduling remain in development.
 
+The approved first-run design selects automatic certificates by default and retains an existing-certificate option. Public CA validation still uses standard validation ports; changing the application's port does not relocate those checks. The commands above use supplied certificates while integrated setup is being built.
+
 The certificate and key must remain readable by the desktop user after binding privileges are dropped, including after replacements. A different service’s protected certificate directory is not automatically shared with Traverse.
 
 Versioned standalone configurations watch their certificate and key files. An external certificate manager can replace those files without restarting sharing. A replacement must have a matching key, a valid server chain and validity period, and the configured domain or IP in its Subject Alternative Name. New connections use the validated replacement; established HTTPS/TURN connections and desktop/input processes continue running.

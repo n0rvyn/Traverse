@@ -4,7 +4,9 @@ Run: python3 tests/tls_router_test.py /path/to/traverse-tls-frontend /path/to/tr
 No desktop, public listener, credentials or package changes are involved.
 """
 import contextlib
+import base64
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -321,16 +323,212 @@ class RouterTests(unittest.TestCase):
             self.replacement(original_cert, original_key)
 
     @contextlib.contextmanager
-    def tls(self, context=None):
+    def tls(self, context=None, session=None):
         raw = socket.create_connection((self.host, self.port), timeout=3)
         try:
-            stream = (context or self.context).wrap_socket(raw, server_hostname='localhost')
+            stream = (context or self.context).wrap_socket(raw, server_hostname='localhost', session=session)
             try:
                 yield stream
             finally:
                 stream.close()
         finally:
             raw.close()
+
+    def challenge_start(self, bootstrap=False):
+        self.stop()
+        root = Path(self.directory.name)
+        self.acme_socket = root/('acme-'+str(time.monotonic_ns())+'.sock')
+        self.acme_status = root/('status-'+str(time.monotonic_ns())+'.json')
+        if bootstrap:
+            self.cert = root/('managed-'+str(time.monotonic_ns())+'.pem')
+            self.key = root/('managed-'+str(time.monotonic_ns())+'.key')
+        self.start(self.http.server_address[1], self.turn.server_address[1], extra=[
+            '--expected-domain', 'localhost', '--trust-file', str(self.issuer_cert), '--trust-directory', '',
+            '--acme-socket', str(self.acme_socket), '--status-file', str(self.acme_status),
+            '--certificate-bootstrap', 'true' if bootstrap else 'false'])
+
+    def challenge_lease(self, seconds=60):
+        digest = hashlib.sha256(b'synthetic-local-challenge-not-a-real-account').digest()
+        body = json.dumps({'version':1,'domain':'localhost',
+                           'sha256':base64.urlsafe_b64encode(digest).decode().rstrip('='),
+                           'expires':int(time.time())+seconds},separators=(',',':')).encode()
+        peer=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);peer.settimeout(3)
+        try:
+            peer.connect(str(self.acme_socket));peer.sendall(struct.pack('!I',len(body))+body)
+            reply=json.loads(receive(peer,struct.unpack('!I',receive(peer,4))[0]))
+            self.assertEqual(reply,{'ready':True})
+            return peer,digest
+        except BaseException:peer.close();raise
+
+    @staticmethod
+    def challenge_context(protocols=('acme-tls/1',), version=None):
+        # ACME validates this self-signed proof by its extension, not PKI trust.
+        # Normal application clients continue using the strict context above.
+        context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
+        context.set_alpn_protocols(list(protocols))
+        if version:context.minimum_version=context.maximum_version=version
+        return context
+
+    def assert_challenge_der(self, stream, digest):
+        self.assertEqual(stream.selected_alpn_protocol(),'acme-tls/1')
+        # Independent socket witness checks the critical ACME OID and exact
+        # nested OCTET STRING. Native tests separately decode the complete X509.
+        extension=b'\x06\x08\x2b\x06\x01\x05\x05\x07\x01\x1f\x01\x01\xff\x04\x22\x04\x20'+digest
+        self.assertIn(extension,stream.getpeercert(binary_form=True))
+
+    def release_challenge(self, peer):
+        peer.shutdown(socket.SHUT_WR)
+        self.assertEqual(peer.recv(1),b'', 'Broker did not acknowledge lease cleanup by EOF')
+
+    def test_acme_proof_routes_no_application_bytes(self):
+        self.challenge_start()
+        probe=self.challenge_context()
+        with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+            with self.tls(probe):pass
+        peer,digest=self.challenge_lease()
+        with peer:
+            for version in (ssl.TLSVersion.TLSv1_2,ssl.TLSVersion.TLSv1_3):
+                for payload in (b'GET / HTTP/1.1\r\n\r\n',struct.pack('!HHI12s',3,0,0x2112a442,b'fixed-probe!')):
+                    with self.subTest(version=version,payload=payload[:3]), self.tls(self.challenge_context(version=version)) as stream:
+                        self.assert_challenge_der(stream,digest)
+                        try:
+                            stream.sendall(payload);self.assertEqual(stream.recv(1024),b'')
+                        except (ssl.SSLError,ConnectionResetError,BrokenPipeError):pass
+            self.assertEqual(self.http.accepted,0);self.assertEqual(self.turn.accepted,0)
+            for protocols in (('acme-tls/1','http/1.1'),('http/1.1','acme-tls/1')):
+                with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                    with self.tls(self.challenge_context(protocols)):pass
+            for hostname in (None,'other.test'):
+                with socket.create_connection((self.host,self.port),timeout=3) as raw:
+                    with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                        with probe.wrap_socket(raw,server_hostname=hostname):pass
+            with self.tls() as normal:
+                normal.sendall(b'GET / HTTP/1.1\r\n\r\n')
+                self.assertEqual(receive(normal,2),b'H:')
+            self.assertEqual(self.http.accepted,1);self.assertEqual(self.turn.accepted,0)
+            self.release_challenge(peer)
+        with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+            with self.tls(probe):pass
+
+    def test_acme_bootstrap_admits_only_leased_challenge_then_promotes(self):
+        self.challenge_start(bootstrap=True)
+        status=json.loads(self.acme_status.read_text())
+        self.assertEqual((status['revision'],status['fingerprint'],status['validFrom'],status['validUntil'],status['available']),
+                         (0,'',0,0,False))
+        normal_probe=self.challenge_context(('http/1.1',))
+        with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+            with self.tls(normal_probe):pass
+        peer,digest=self.challenge_lease()
+        with peer, self.tls(self.challenge_context()) as validation:
+            self.assert_challenge_der(validation,digest)
+            self.assertEqual(validation.recv(1),b'')
+            with self.assertRaises((ssl.SSLError,ConnectionResetError)):
+                with self.tls(normal_probe):pass
+            self.assertEqual(self.http.accepted,0);self.assertEqual(self.turn.accepted,0)
+            cert,key=self.leaf('bootstrap-promoted')
+            self.replacement(cert,key);self.process.send_signal(signal.SIGHUP)
+            deadline=time.monotonic()+3
+            while True:
+                status=json.loads(self.acme_status.read_text())
+                if status['revision']==1 and status['available']:break
+                self.assertLess(time.monotonic(),deadline,'Trusted certificate did not promote bootstrap')
+                time.sleep(.02)
+            with self.tls() as application:
+                application.sendall(b'GET / HTTP/1.1\r\n\r\n');self.assertEqual(receive(application,2),b'H:')
+            self.release_challenge(peer)
+        self.assertEqual(self.turn.accepted,0)
+
+    def test_acme_pending_handshake_cannot_survive_lease_revocation(self):
+        self.challenge_start()
+        peer,_=self.challenge_lease()
+        probe=self.challenge_context(version=ssl.TLSVersion.TLSv1_3)
+        incoming,outgoing=ssl.MemoryBIO(),ssl.MemoryBIO()
+        pending=probe.wrap_bio(incoming,outgoing,server_side=False,server_hostname='localhost')
+        with self.assertRaises(ssl.SSLWantReadError):pending.do_handshake()
+        hello=outgoing.read()
+        with peer, socket.create_connection((self.host,self.port),timeout=3) as raw:
+            raw.sendall(hello[:1]);self.release_challenge(peer)
+            rejected=False;deadline=time.monotonic()+3
+            try:
+                raw.sendall(hello[1:])
+                while time.monotonic()<deadline:
+                    try:
+                        pending.do_handshake()
+                    except ssl.SSLWantReadError:
+                        if outgoing.pending:raw.sendall(outgoing.read())
+                        data=raw.recv(65536)
+                        if not data:rejected=True;break
+                        incoming.write(data)
+                    except ssl.SSLError:rejected=True;break
+                    else:self.fail('Revoked challenge completed a pending handshake')
+            except (ConnectionResetError,BrokenPipeError):rejected=True
+            self.assertTrue(rejected,'Pending revoked handshake did not terminate')
+            self.assertEqual(self.http.accepted,0);self.assertEqual(self.turn.accepted,0)
+
+    def test_acme_bootstrap_is_explicit_and_malformed_hello_is_rejected(self):
+        self.stop();root=Path(self.directory.name)
+        path=root/('rejected-'+str(time.monotonic_ns())+'.sock')
+        missing_cert=root/'never-created-cert.pem';missing_key=root/'never-created-key.pem'
+        base=[BINARY,'--host','127.0.0.1','--port','0','--http-port',str(self.http.server_address[1]),
+              '--turn-port',str(self.turn.server_address[1]),'--cert',str(missing_cert),'--key',str(missing_key),
+              '--expected-domain','localhost']
+        for extra in ([],['--acme-socket',str(path)],['--certificate-bootstrap','true']):
+            failed=subprocess.run([*base,*extra],capture_output=True,timeout=5)
+            self.assertNotEqual(failed.returncode,0,'Missing certificate silently entered bootstrap')
+            self.assertFalse(path.exists(),'Failed startup retained an owned challenge socket')
+        # Restore a real supervised process for normal teardown and positive
+        # control before mutating the actual ClientHello's ALPN length.
+        self.start(self.http.server_address[1],self.turn.server_address[1]);self.challenge_start()
+        peer,digest=self.challenge_lease();probe=self.challenge_context()
+        with peer:
+            with self.tls(probe) as valid:self.assert_challenge_der(valid,digest)
+            incoming,outgoing=ssl.MemoryBIO(),ssl.MemoryBIO()
+            client=probe.wrap_bio(incoming,outgoing,server_side=False,server_hostname='localhost')
+            with self.assertRaises(ssl.SSLWantReadError):client.do_handshake()
+            hello=bytearray(outgoing.read());needle=b'\x00\x10\x00\x0d\x00\x0b\x0aacme-tls/1'
+            self.assertEqual(hello.count(needle),1,'Malformed control did not identify the ALPN extension')
+            offset=hello.index(needle);hello[offset+5]=10
+            with socket.create_connection((self.host,self.port),timeout=3) as raw:
+                raw.sendall(hello)
+                try:reply=raw.recv(65536)
+                except ConnectionResetError:reply=b''
+                if reply:
+                    # Only a fatal TLS alert is accepted, never a ServerHello.
+                    self.assertEqual(reply[0],21)
+            self.assertEqual(self.http.accepted,0);self.assertEqual(self.turn.accepted,0)
+            self.release_challenge(peer)
+
+    def test_acme_cross_route_sessions_are_isolated_without_disabling_normal_reuse(self):
+        observations=[]
+        for version in (ssl.TLSVersion.TLSv1_2,ssl.TLSVersion.TLSv1_3):
+            with self.subTest(version=version):
+                self.stop();self.start(self.http.server_address[1],self.turn.server_address[1])
+                client=self.challenge_context(('http/1.1',),version)
+                def application(session=None):
+                    with self.tls(client,session) as stream:
+                        stream.sendall(b'GET / HTTP/1.1\r\n\r\n');self.assertEqual(receive(stream,2),b'H:')
+                        return stream.session,stream.session_reused,stream.getpeercert(binary_form=True)
+                baseline_session,_,_=application();_,baseline_reused,_=application(baseline_session)
+                self.challenge_start();peer,digest=self.challenge_lease()
+                with peer:
+                    normal,_,normal_der=application();latest,reused,_=application(normal)
+                    self.assertEqual(reused,baseline_reused,'Challenge support changed normal session resumption')
+                    client.set_alpn_protocols(['acme-tls/1'])
+                    with self.tls(client,latest) as validation:
+                        self.assertFalse(validation.session_reused)
+                        self.assert_challenge_der(validation,digest)
+                        self.assertEqual(validation.recv(1),b'')
+                        challenge_session=validation.session
+                    with self.tls(client,challenge_session) as repeated:
+                        self.assertFalse(repeated.session_reused,'Challenge handshake reused a cached session')
+                        self.assert_challenge_der(repeated,digest);self.assertEqual(repeated.recv(1),b'')
+                    client.set_alpn_protocols(['http/1.1'])
+                    _,back_reused,back_der=application(challenge_session)
+                    self.assertFalse(back_reused);self.assertEqual(back_der,normal_der)
+                    observations.append({'version':version.name,'baselineNormalReuse':baseline_reused,'withChallengeNormalReuse':reused})
+                    self.release_challenge(peer)
+        print(json.dumps({'sessionIsolationControls':observations}))
 
     def test_fragmented_http_and_http11_alpn(self):
         payload = b'POST /api/probe HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello'

@@ -24,6 +24,14 @@ int main() {
                        {"domain", "Desktop.Example.COM"},
                        {"certificate", "/tmp/test.crt"},
                        {"privateKey", "/tmp/test.key"}};
+        require(EndpointSettings::normalize_host("EXAMPLE.com.") == "example.com" &&
+                    EndpointSettings::normalize_host("xn--bcher-kva.example") == "xn--bcher-kva.example" &&
+                    EndpointSettings::normalize_host("[2001:0db8::1]") == "2001:db8::1" &&
+                    EndpointSettings::normalize_host("127.0.0.1") == "127.0.0.1",
+                "Shared host normalization changed");
+        for (const auto &host : {"", "*.example.com", "bad..example", "https://example.com",
+                                 "example.com/path", "127.1", "example.123", "-bad.example"})
+            rejects([&] { EndpointSettings::normalize_host(host); });
         auto settings = EndpointSettings::parse(config, ":99");
         require(settings.mode == EndpointMode::Standalone && settings.port == 443 &&
                     settings.media_port == 443,
