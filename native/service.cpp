@@ -1,5 +1,6 @@
 #include "common.hpp"
 #include "endpoint_settings.hpp"
+#include "owner_state.hpp"
 #include <arpa/inet.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
@@ -113,6 +114,8 @@ class Peer : public std::enable_shared_from_this<Peer> {
     bool gathered = false, cleaned = false;
     inline static std::atomic<unsigned long> next_generation{0};
     unsigned long generation = ++next_generation;
+    std::atomic<int> connection_state{GST_WEBRTC_PEER_CONNECTION_STATE_NEW};
+    std::atomic<bool> control_open{false}, control_closed{false};
     using Weak = std::weak_ptr<Peer>;
     static void destroy_weak(gpointer d, GClosure *) {
         delete static_cast<Weak *>(d);
@@ -200,6 +203,11 @@ class Peer : public std::enable_shared_from_this<Peer> {
             return;
         }
         channel = GST_WEBRTC_DATA_CHANNEL(g_object_ref(c));
+        g_signal_connect_data(c, "on-open", G_CALLBACK(+[](GstWebRTCDataChannel *, gpointer d) {
+                                  if (auto p = get(d))
+                                      p->control_open = true;
+                              }),
+                              new Weak(shared_from_this()), destroy_weak, GConnectFlags(0));
         g_signal_connect_data(c, "on-message-string",
                               G_CALLBACK(+[](GstWebRTCDataChannel *, gchar *message, gpointer d) {
                                   if (auto p = get(d))
@@ -207,10 +215,20 @@ class Peer : public std::enable_shared_from_this<Peer> {
                               }),
                               new Weak(shared_from_this()), destroy_weak, GConnectFlags(0));
         g_signal_connect_data(c, "on-close", G_CALLBACK(+[](GstWebRTCDataChannel *, gpointer d) {
-                                  if (auto p = get(d); p && p->active)
-                                      p->failed = true;
+                                  if (auto p = get(d)) {
+                                      p->control_closed = true;
+                                      if (p->active)
+                                          p->failed = true;
+                                  }
                               }),
                               new Weak(shared_from_this()), destroy_weak, GConnectFlags(0));
+        GstWebRTCDataChannelState initial;
+        g_object_get(c, "ready-state", &initial, nullptr);
+        if (initial == GST_WEBRTC_DATA_CHANNEL_STATE_OPEN)
+            control_open = true;
+        if (initial == GST_WEBRTC_DATA_CHANNEL_STATE_CLOSING ||
+            initial == GST_WEBRTC_DATA_CHANNEL_STATE_CLOSED)
+            control_closed = true;
     }
 
   public:
@@ -220,6 +238,35 @@ class Peer : public std::enable_shared_from_this<Peer> {
         : ipc(connection), token(std::move(credential)) {}
     ~Peer() {
         stop();
+    }
+    json owner_state() const {
+        const char *state = "unknown";
+        switch (connection_state.load()) {
+        case GST_WEBRTC_PEER_CONNECTION_STATE_NEW:
+            state = "new";
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTING:
+            state = "connecting";
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED:
+            state = "connected";
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED:
+            state = "disconnected";
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_FAILED:
+            state = "failed";
+            break;
+        case GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED:
+            state = "closed";
+            break;
+        }
+        bool live = active.load() && !failed.load();
+        return {{"generation", generation},
+                {"peerPresent", true},
+                {"peerActive", live},
+                {"rtcState", active.load() ? state : "closed"},
+                {"controlOpen", live && control_open.load() && !control_closed.load()}};
     }
     void build(const std::string &frame_socket, const std::string &stun, int udp_port, int bitrate,
                bool udp_only) {
@@ -319,6 +366,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
                 if (auto p = get(d)) {
                     GstWebRTCPeerConnectionState state;
                     g_object_get(object, "connection-state", &state, nullptr);
+                    p->connection_state = state;
                     auto *klass = static_cast<GEnumClass *>(
                         g_type_class_ref(GST_TYPE_WEBRTC_PEER_CONNECTION_STATE));
                     auto *value = g_enum_get_value(klass, state);
@@ -412,6 +460,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
     }
     void stop() {
         active = false;
+        control_closed = true;
         gather_cv.notify_all();
         std::lock_guard stop_lock(stop_mutex);
         if (cleaned)
@@ -478,6 +527,28 @@ class Service {
             std::lock_guard lock(state_mutex);
             total_frames += old->frames;
         }
+    }
+    void owner_routes(httplib::Server &owner) {
+        owner.Get("/state", [this](const httplib::Request &, httplib::Response &response) {
+            std::shared_ptr<Peer> current;
+            {
+                std::lock_guard lock(state_mutex);
+                current = peer;
+            }
+            auto value = current ? current->owner_state()
+                                 : json{{"generation", 0},
+                                        {"peerPresent", false},
+                                        {"peerActive", false},
+                                        {"rtcState", "none"},
+                                        {"controlOpen", false}};
+            value.update(
+                {{"schemaVersion", 1},
+                 {"pid", getpid()},
+                 {"observedMonotonicMs", std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             Clock::now().time_since_epoch())
+                                             .count()}});
+            reply(response, value);
+        });
     }
     void routes(httplib::Server &server) {
         auto literal = [](const std::string &path) {
@@ -729,6 +800,11 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Cannot configure exclusive service listener");
         });
         service.routes(*server);
+        std::unique_ptr<traverse::OwnerStateListener> owner;
+        if (args.has("--owner-socket"))
+            owner = std::make_unique<traverse::OwnerStateListener>(
+                args.get("--owner-socket"),
+                [&](auto &listener) { service.owner_routes(listener); });
         int port = std::stoi(args.get("--port", "8443"));
         if (!server->bind_to_port(host, port))
             throw std::runtime_error("Cannot bind service listener");
@@ -739,14 +815,16 @@ int main(int argc, char **argv) {
         });
         std::cout << (internal_http ? "Internal HTTP backend for " : "Listening at ") << origin
                   << (base_path == "/" ? "" : base_path) << std::endl;
-        while (!stopping && !listener_failed) {
+        while (!stopping && !listener_failed && !(owner && owner->failed())) {
             service.tick();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         server->stop();
         listener.join();
         service.drop();
-        if (listener_failed)
+        bool owner_failed = owner && owner->failed();
+        owner.reset();
+        if (listener_failed || owner_failed)
             throw std::runtime_error("Service listener failed");
         return 0;
     } catch (const std::exception &e) {

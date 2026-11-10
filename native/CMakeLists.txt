@@ -70,9 +70,16 @@ target_link_libraries(traverse-adapter PRIVATE traverse-common X11::X11 X11::Xts
 add_executable(traverse-service service.cpp)
 target_link_libraries(traverse-service PRIVATE traverse-common traverse-settings)
 if(BUILD_TESTING)
+  add_executable(owner-state-probe ../tests/owner_state_probe.cpp)
+  target_include_directories(owner-state-probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(owner-state-probe PRIVATE traverse-common)
   add_test(NAME loopback-service-boundaries COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/../tests/loopback_service_test.py $<TARGET_FILE:traverse-service>
     ${CMAKE_CURRENT_SOURCE_DIR}/../web)
+  add_test(NAME service-owner-boundaries COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/service_owner_test.py
+    --service $<TARGET_FILE:traverse-service> --probe $<TARGET_FILE:owner-state-probe>
+    --web ${CMAKE_CURRENT_SOURCE_DIR}/../web)
 endif()
 add_executable(traverse-runtime-check runtime_check.cpp)
 target_link_libraries(traverse-runtime-check PRIVATE nlohmann_json::nlohmann_json PkgConfig::GST PkgConfig::SRTP OpenSSL::Crypto)
@@ -87,7 +94,17 @@ if(BUILD_TESTING)
   add_test(NAME certificate-manager COMMAND certificate-manager-test)
 endif()
 add_executable(traverse-launcher launcher.cpp standalone.cpp)
-target_link_libraries(traverse-launcher PRIVATE traverse-common traverse-settings traverse-tls-routing traverse-certificates)
+target_link_libraries(traverse-launcher PRIVATE traverse-common traverse-settings traverse-tls-routing traverse-certificates traverse-host-channel)
+add_library(traverse-host-channel host_channel.cpp)
+target_include_directories(traverse-host-channel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(traverse-host-channel PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(traverse-host-channel PUBLIC nlohmann_json::nlohmann_json)
+if(BUILD_TESTING)
+  add_executable(host-channel-test ../tests/host_channel_test.cpp)
+  target_link_libraries(host-channel-test PRIVATE traverse-host-channel)
+  add_test(NAME host-channel COMMAND host-channel-test)
+  set_tests_properties(host-channel PROPERTIES TIMEOUT 30)
+endif()
 install(TARGETS traverse-adapter traverse-service traverse-runtime-check traverse-launcher traverse-tls-frontend traverse-bind-helper RUNTIME DESTINATION libexec/traverse)
 install(DIRECTORY ../web/ DESTINATION share/traverse/web)
 

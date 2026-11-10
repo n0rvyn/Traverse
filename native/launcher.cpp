@@ -1,7 +1,9 @@
 #include "child.hpp"
 #include "common.hpp"
 #include "endpoint_settings.hpp"
+#include "host_channel.hpp"
 #include "standalone.hpp"
+#include <charconv>
 #include <fcntl.h>
 #include <sys/file.h>
 
@@ -32,12 +34,50 @@ class OwnerLock {
 };
 
 int main(int argc, char **argv) {
+    std::unique_ptr<traverse::HostSupervisor> host;
     try {
         Args args(argc, argv);
+        if (args.has("--owner-fd")) {
+            for (const char *name : {"--owner-fd", "--supervisor-pid"}) {
+                unsigned count = 0;
+                for (int index = 1; index < argc; ++index)
+                    if (argv[index] == std::string(name))
+                        ++count;
+                if (count != 1)
+                    throw std::runtime_error(
+                        "Owner channel requires unique fd and parent arguments");
+            }
+            if (args.has("--turn-child"))
+                throw std::runtime_error("TURN child cannot own the host window channel");
+            auto number = [&](const char *name) {
+                auto text = args.get(name);
+                int result = 0;
+                auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
+                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+                    result < 0)
+                    throw std::runtime_error("Owner channel descriptor/parent must be an integer");
+                return result;
+            };
+            host = std::make_unique<traverse::HostSupervisor>(
+                number("--owner-fd"), number("--supervisor-pid"), random_secret(16));
+            if (host->pump())
+                return host->failed() ? 1 : 0;
+        }
+        guard_supervisor(args);
         auto binary_dir = std::filesystem::canonical("/proc/self/exe").parent_path();
         if (args.has("--turn-child")) {
-            guard_supervisor(args);
             traverse::turn_child(args.get("--turn-child"), binary_dir);
+        }
+        if (args.has("--runtime-environment")) {
+            json environment = json::object();
+            for (const char *name : {"TRAVERSE_RUNTIME_PREFIX", "LD_LIBRARY_PATH", "PATH",
+                 "GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SCANNER",
+                 "GST_REGISTRY", "SSL_CERT_FILE", "SSL_CERT_DIR"}) {
+                if (const char *value = getenv(name))
+                    environment[name] = value;
+            }
+            std::cout << json({{"schemaVersion", 1}, {"environment", environment}}).dump() << '\n';
+            return 0;
         }
         if (args.has("--help")) {
             std::cout << "Usage: traverse [--config FILE] [--check-config]\n"
@@ -75,6 +115,13 @@ int main(int argc, char **argv) {
             std::cout << "Configuration valid; no screen capture or listener started\n";
             return 0;
         }
+        if (host && settings.mode != traverse::EndpointMode::Standalone)
+            throw std::runtime_error("Host owner channel requires a schemaVersion 1 configuration");
+        if (host) {
+            host->stage("desktop");
+            if (host->pump())
+                return host->failed() ? 1 : 0;
+        }
         if (display.empty())
             throw std::runtime_error("An existing X11 DISPLAY is required");
         umask(0077);
@@ -82,6 +129,8 @@ int main(int argc, char **argv) {
         if (const char *runtime = getenv("XDG_RUNTIME_DIR"))
             directory = std::filesystem::path(runtime) / "traverse";
         directory = std::filesystem::absolute(directory);
+        if (host)
+            host->stage("runtime");
         OwnerLock owner(directory);
         auto socket = (directory / "adapter.sock").string();
         Ipc ipc(socket);
@@ -98,8 +147,15 @@ int main(int argc, char **argv) {
         std::signal(SIGTERM, signal_stop);
         std::signal(SIGPIPE, SIG_IGN);
         auto prefix = binary_dir.parent_path().parent_path();
-        if (settings.mode == traverse::EndpointMode::Standalone)
-            return traverse::standalone(settings, binary_dir, prefix, directory);
+        if (settings.mode == traverse::EndpointMode::Standalone) {
+            auto result = traverse::standalone(settings, binary_dir, prefix, directory, host.get());
+            if (host) {
+                host->stage("stopped", "stopped");
+                if (host->failed())
+                    return 1;
+            }
+            return result;
+        }
         Child adapter(binary_dir / "traverse-adapter", {"--display", display, "--socket", socket});
         bool ready = false;
         auto deadline = Clock::now() + std::chrono::seconds(15);
@@ -130,7 +186,14 @@ int main(int argc, char **argv) {
         }
         return 0;
     } catch (const std::exception &error) {
+        bool cancelled = stopping && host && !host->failed();
+        if (host) {
+            try {
+                host->failure();
+            } catch (...) {
+            }
+        }
         std::cerr << "Traverse: " << error.what() << '\n';
-        return 1;
+        return cancelled ? 0 : 1;
     }
 }

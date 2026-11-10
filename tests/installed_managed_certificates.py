@@ -250,7 +250,7 @@ def changed_schedule(state):
     pending.replace(path)
 
 
-def main():
+def require_disposable_environment():
     # The SDK diagnostic uses private mount/network/PID namespaces instead of
     # Docker. Require evidence of every namespace transition and an isolated
     # network before allowing the same low-port fixture there.
@@ -264,6 +264,10 @@ def main():
     assert os.getuid()==0 and (Path('/.dockerenv').exists() or private_namespaces), \
         'Only an explicit disposable container or private mount/network/PID namespace can bind test443'
     assert Path('/proc/sys/net/ipv4/ip_unprivileged_port_start').read_text().strip()=='1024'
+
+
+def main():
+    require_disposable_environment()
     assert PEBBLE.is_file()
     reports = []
     for app_port in (443,free_port()):

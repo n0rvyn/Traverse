@@ -1,6 +1,8 @@
 #include "standalone.hpp"
 #include "certificate_manager.hpp"
 #include "child.hpp"
+#include "host_channel.hpp"
+#include "owner_state.hpp"
 #include "tls_certificate.hpp"
 #include <arpa/inet.h>
 #include <ctime>
@@ -316,13 +318,91 @@ void turn_child(const std::filesystem::path &configuration,
 }
 
 int standalone(const EndpointSettings &requested, const std::filesystem::path &binary_directory,
-               const std::filesystem::path &prefix, const std::filesystem::path &runtime) {
+               const std::filesystem::path &prefix, const std::filesystem::path &runtime,
+               HostSupervisor *owner) {
     auto settings = requested;
     PrivateFiles files(runtime);
     auto socket = (runtime / "adapter.sock").string();
     Ipc ipc(socket);
     Sharing children(socket);
     const bool automatic = settings.certificates.mode == CertificateMode::Automatic;
+    HostSupervisor absent;
+    auto &host = owner ? *owner : absent;
+    bool service_ready = false, https_verified = false;
+    struct OwnerBinding {
+        HostSupervisor &host;
+        ~OwnerBinding() {
+            host.unbind();
+        }
+    } binding{host};
+    if (host.enabled()) {
+        host.bind(
+            [&] {
+                json state = {{"configuredUrl", settings.public_url()},
+                              {"externalReachability", "unknown"},
+                              {"localHttps", {{"status", https_verified ? "passed" : "pending"}}},
+                              {"authority", {{"status", "unavailable"}}},
+                              {"peer", {{"status", "unavailable"}}},
+                              {"certificate", {{"status", "unknown"}}}};
+                if (children.owns_adapter && children.adapter) {
+                    try {
+                        state["authority"] =
+                            read_owned_state(socket, children.adapter->id(), "/owner/authority");
+                    } catch (const std::exception &) {
+                    }
+                }
+                if (service_ready && children.service) {
+                    try {
+                        state["peer"] = read_owner_state((files.directory / "s").string(),
+                                                         children.service->id());
+                    } catch (const std::exception &) {
+                    }
+                }
+                if (children.certificates)
+                    state["issuer"] = children.certificates->status();
+                if (children.frontend) {
+                    try {
+                        auto certificate = read_tls_certificate_status(
+                            (files.directory / "tls-status.json").string(), children.frontend->id(),
+                            automatic);
+                        state["certificate"] = {
+                            {"status", certificate.available ? "passed" : "pending"},
+                            {"available", certificate.available},
+                            {"fingerprint", certificate.fingerprint},
+                            {"revision", certificate.revision},
+                            {"validUntil", certificate.valid_until},
+                            {"reloadError", certificate.error}};
+                        if (https_verified && !certificate.available)
+                            state["localHttps"]["status"] = "unavailable";
+                    } catch (const std::exception &) {
+                        if (https_verified)
+                            state["localHttps"]["status"] = "unknown";
+                    }
+                }
+                return state;
+            },
+            [&] {
+                if (!children.owns_adapter || !children.adapter)
+                    return json{{"ok", false}, {"error", "not-ready"}};
+                json empty = json::object();
+                auto result =
+                    owned_json_request(socket, children.adapter->id(), "/owner/new-code", &empty);
+                if (result.first == 409)
+                    return json{{"ok", false}, {"error", "paired-or-stopped"}};
+                if (result.first != 200)
+                    return json{{"ok", false}, {"error", "producer-unavailable"}};
+                validate_owner_state(std::move(result.second), children.adapter->id());
+                return json{{"ok", true}};
+            });
+    }
+    auto pump_owner = [&] {
+        if (host.pump())
+            stopping = true;
+    };
+    host.stage("certificate-state");
+    pump_owner();
+    if (stopping)
+        return 0;
     if (automatic) {
         const char *data = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
         if ((!data || !*data) && (!home || !*home))
@@ -358,12 +438,19 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                                              {"username", username},
                                              {"credential", password}}})}};
     files.write("ice.json", ice.dump());
+    host.stage("adapter");
+    pump_owner();
+    if (stopping)
+        return 0;
     children.adapter = std::make_unique<Child>(
         binary_directory / "traverse-adapter",
         std::vector<std::string>{"--display", settings.display, "--socket", socket});
     auto deadline = Clock::now() + std::chrono::seconds(15);
     bool ready = false;
     while (!stopping && Clock::now() < deadline) {
+        pump_owner();
+        if (stopping)
+            break;
         children.check();
         try {
             auto state = ipc.call("/state");
@@ -380,12 +467,19 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     }
     if (!ready)
         throw std::runtime_error("Desktop adapter did not become ready");
+    host.stage("turn");
+    pump_owner();
+    if (stopping)
+        return 0;
     turn.release();
     children.turn = std::make_unique<Child>(
         binary_directory / "traverse-launcher",
         std::vector<std::string>{"--turn-child", (files.directory / "turn.conf").string()});
     deadline = Clock::now() + std::chrono::seconds(15);
     while (!stopping && !owns_listener(children.turn->id(), turn.port)) {
+        pump_owner();
+        if (stopping)
+            break;
         children.check();
         if (Clock::now() >= deadline)
             throw std::runtime_error("Private TURN listener did not become ready");
@@ -393,6 +487,9 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     }
     auto start = [&](const char *role, const char *name, std::vector<std::string> args,
                      unsigned short public_port) {
+        pump_owner();
+        if (stopping)
+            throw std::runtime_error("Sharing stopped during local startup");
         auto binary = binary_directory / name;
         if (public_port < 1024) {
             binary = binary_directory / "traverse-bind-helper";
@@ -400,18 +497,38 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         }
         return std::make_unique<Child>(binary, args, true);
     };
+    host.stage("service");
     http.release();
-    children.service = start(
-        "service", "traverse-service",
-        {"--internal-http", "--host", "127.0.0.1", "--port", std::to_string(http.port), "--origin",
-         settings.origin, "--socket", socket, "--web", (prefix / "share/traverse/web").string(),
-         "--base-path", settings.base_path, "--udp-port", std::to_string(settings.port),
-         "--udp-only", "--check-udp-port", "--ice-config", (files.directory / "ice.json").string()},
-        settings.port);
+    children.service = start("service", "traverse-service",
+                             {"--internal-http",
+                              "--host",
+                              "127.0.0.1",
+                              "--port",
+                              std::to_string(http.port),
+                              "--origin",
+                              settings.origin,
+                              "--socket",
+                              socket,
+                              "--web",
+                              (prefix / "share/traverse/web").string(),
+                              "--owner-socket",
+                              (files.directory / "s").string(),
+                              "--base-path",
+                              settings.base_path,
+                              "--udp-port",
+                              std::to_string(settings.port),
+                              "--udp-only",
+                              "--check-udp-port",
+                              "--ice-config",
+                              (files.directory / "ice.json").string()},
+                             settings.port);
     auto expected = "Internal HTTP backend for " + settings.origin +
                     (settings.base_path == "/" ? "" : settings.base_path);
-    if (children.service->ready_line() != expected)
+    if (children.service->ready_line(pump_owner) != expected)
         throw std::runtime_error("Internal HTTP service readiness response invalid");
+    read_owner_state((files.directory / "s").string(), children.service->id());
+    service_ready = true;
+    host.stage("tls");
     std::vector<std::string> frontend_arguments = {"--host",
                                                    settings.listen_address,
                                                    "--port",
@@ -468,7 +585,8 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         if (proof)
             arguments.insert(arguments.end(), {"--challenge-only", "true"});
         children.frontend = start("frontend", "traverse-tls-frontend", arguments, settings.port);
-        if (json::parse(children.frontend->ready_line()).value("port", 0) != settings.port)
+        if (json::parse(children.frontend->ready_line(pump_owner)).value("port", 0) !=
+            settings.port)
             throw std::runtime_error("TLS listener readiness response invalid");
     };
     launch_frontend(proof_only);
@@ -483,7 +601,8 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                            children.certificates->broker(), "--status-file",
                            (files.directory / "validation-status.json").string()},
                           443);
-                if (json::parse(children.validation->ready_line()).value("port", 0) != 443)
+                if (json::parse(children.validation->ready_line(pump_owner)).value("port", 0) !=
+                    443)
                     throw std::runtime_error("Validation listener readiness response invalid");
                 auto status = read_tls_certificate_status(
                     (files.directory / "validation-status.json").string(),
@@ -516,13 +635,21 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     };
     // Local listener startup keeps its existing deadline; CA validation is an
     // owned asynchronous workflow and can remain pending beyond15seconds.
+    if (proof_only)
+        host.stage("certificate", "waiting-certificate");
     while (!stopping && proof_only) {
+        pump_owner();
+        if (stopping)
+            break;
         children.check();
         if (!owner_armed())
             return 0;
         children.certificates->tick();
         if (children.certificates->application().available) {
             children.frontend.reset();
+            pump_owner();
+            if (stopping)
+                return 0;
             launch_frontend(false);
             proof_only = false;
             children.certificates->frontend(
@@ -532,9 +659,13 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     }
     if (stopping)
         return 0;
+    host.stage("https");
     deadline = Clock::now() + std::chrono::seconds(15);
     ready = false;
     while (!stopping && Clock::now() < deadline) {
+        pump_owner();
+        if (stopping)
+            break;
         children.check();
         if (https_ready(settings)) {
             ready = true;
@@ -544,11 +675,16 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     }
     if (!ready)
         throw std::runtime_error("Local HTTPS endpoint did not become ready");
+    https_verified = true;
+    host.stage("sharing", "ready");
     std::cout << "Traverse URL: " << settings.public_url()
               << "\nLocal HTTPS verified. External reachability is not yet verified. "
                  "Use the local pairing dialog to connect; press Ctrl+C to stop.\n"
               << std::flush;
     while (!stopping) {
+        pump_owner();
+        if (stopping)
+            break;
         children.check();
         if (!owner_armed())
             break;

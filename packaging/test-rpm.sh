@@ -12,6 +12,7 @@ rpm -V traverse
 gcc /src/tests/x11_input_probe.c -o /tmp/x11-probe -lX11 -lXtst
 gcc /src/tests/x11_capture.c -o /tmp/x11-capture -lX11
 export TRAVERSE_TEST_FAILURE_ARTIFACTS=/src/.work/managed-failure-images
+bash /src/packaging/test-host-owner.sh
 xvfb-run -a python3 /src/tests/installed_managed_certificates.py
 dnf remove -y traverse
 test ! -e /opt/traverse/libexec/traverse/traverse-service

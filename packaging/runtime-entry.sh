@@ -1,5 +1,13 @@
 #!/bin/sh
 set -eu
+# A host window prepares this environment before creating its private socket,
+# then execs the native launcher directly. Shell utilities must not inherit it.
+for option do
+  if [ "$option" = --owner-fd ]; then
+    printf '%s\n' 'The private host channel requires the native launcher.' >&2
+    exit 1
+  fi
+done
 self=$(readlink -f -- "$0")
 prefix=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
 export TRAVERSE_RUNTIME_PREFIX="$prefix"

@@ -86,11 +86,15 @@ class Child {
         if (result < 0 && errno != EINTR)
             throw std::runtime_error("Cannot monitor " + name);
     }
-    std::string ready_line() {
+    std::string ready_line(const std::function<void()> &owner_tick = {}) {
         if (output < 0)
             throw std::runtime_error("Child readiness pipe unavailable");
         auto deadline = Clock::now() + std::chrono::seconds(15);
         while (!stopping && Clock::now() < deadline) {
+            if (owner_tick)
+                owner_tick();
+            if (stopping)
+                break;
             check();
             pollfd item{output, POLLIN, 0};
             int ready = poll(&item, 1, 100);

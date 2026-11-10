@@ -38,6 +38,7 @@ xvfb-run -a python3 /src/tests/desktop_fixture_test.py
 xvfb-run -a python3 /src/tests/installed_dialog.py
 xvfb-run -a python3 /src/tests/installed_launcher.py
 xvfb-run -a python3 /src/tests/installed_standalone.py
+bash /src/packaging/test-host-owner.sh
 xvfb-run -a python3 /src/tests/installed_managed_certificates.py
 xvfb-run -a -s '-screen 0 1280x800x24 -extension XTEST' python3 /src/tests/installed_guardian_startup.py
 apt-get remove -y traverse
