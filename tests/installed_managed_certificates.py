@@ -12,9 +12,11 @@ from pathlib import Path
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import tempfile
 import time
+import zlib
 
 from bind_helper_test import UID, GID, BIND, verify_threads
 from installed_standalone import alive, children, descendants, free_port, ipc, wait
@@ -137,6 +139,45 @@ class Desktop:
                        env=self.env, check=True, stdout=subprocess.DEVNULL)
         subprocess.run([self.probe, 'click'], env=self.env, check=True, stdout=subprocess.DEVNULL)
 
+    def stop_diagnostics(self):
+        # This fixture creates every observed process and its private X display.
+        # Never inspect argv, environment, account material or operator logs.
+        result = {'syntheticStopDiagnostic':True,'port':self.port,'launcherExit':self.launch.poll()}
+        try:
+            state=ipc(self.adapter,'/state')
+            result['adapter']={key:state[key] for key in ('armed','paired','capturing')}
+        except (OSError,ValueError,AssertionError,http.client.HTTPException):
+            result['adapter']='unavailable'
+        result['shiftHeld']=self.x11('query')['shift']
+        result['children']=[]
+        for pid in descendants(self.launch.pid):
+            try:
+                root=Path(f'/proc/{pid}')
+                fields=dict(line.split(':',1) for line in (root/'status').read_text().splitlines() if ':' in line)
+                result['children'].append({'pid':pid,'name':fields['Name'].strip(),
+                    'state':fields['State'].strip(),'waitChannel':(root/'wchan').read_text().strip()})
+            except OSError:
+                pass
+        destination=os.environ.get('TRAVERSE_TEST_FAILURE_ARTIFACTS')
+        if destination:
+            try:
+                directory=Path(destination);directory.mkdir(parents=True,exist_ok=True)
+                image=directory/f'managed-stop-{os.getpid()}-{self.port}.ppm'
+                subprocess.run(['/tmp/x11-capture',str(image)],env=self.env,check=True,timeout=5)
+                magic,size,maximum,pixels=image.read_bytes().split(b'\n',3)
+                width,height=map(int,size.split())
+                assert magic==b'P6' and maximum==b'255' and len(pixels)==width*height*3
+                def chunk(kind,data):
+                    return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data))
+                scanlines=b''.join(b'\0'+pixels[y*width*3:(y+1)*width*3] for y in range(height))
+                image.with_suffix('.png').write_bytes(b'\x89PNG\r\n\x1a\n'+
+                    chunk(b'IHDR',struct.pack('!IIBBBBB',width,height,8,2,0,0,0))+
+                    chunk(b'IDAT',zlib.compress(scanlines))+chunk(b'IEND',b''))
+                result['syntheticDisplayImage']=image.with_suffix('.png').name
+            except (OSError,ValueError,AssertionError,subprocess.SubprocessError) as error:
+                result['imageFailure']=type(error).__name__
+        print(json.dumps(result),flush=True)
+
     def finish(self, how='terminate', expected=0):
         self.collect()
         if self.launch.poll() is None:
@@ -147,7 +188,14 @@ class Desktop:
                 self.launch.kill()
             else:
                 self.launch.terminate()
-        self.launch.wait(timeout=12)
+        try:
+            self.launch.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            try:
+                self.stop_diagnostics()
+            except Exception as error:
+                print(json.dumps({'syntheticStopDiagnosticError':type(error).__name__}),flush=True)
+            raise
         if expected is not None:
             assert self.launch.returncode==expected, ('Owned launcher exit', self.launch.returncode)
         wait(lambda: not any(alive(pid) for pid in self.owned), 'An owned automatic child survived Stop/parent death', timeout=10)

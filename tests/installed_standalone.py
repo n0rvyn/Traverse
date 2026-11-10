@@ -30,10 +30,16 @@ PREFIX = Path(os.environ.get('TRAVERSE_TEST_PREFIX', '/opt/traverse'))
 
 
 def children(pid):
+    found=set()
     try:
-        return [int(item) for item in Path(f'/proc/{pid}/task/{pid}/children').read_text().split()]
+        for thread in Path(f'/proc/{pid}/task').iterdir():
+            try:
+                found.update(int(item) for item in (thread/'children').read_text().split())
+            except (FileNotFoundError,ProcessLookupError):
+                pass
     except FileNotFoundError:
-        return []
+        pass
+    return sorted(found)
 
 
 def descendants(pid):
