@@ -8,8 +8,9 @@ The UI links system Qt6 and runs separately from the private media runtime. It
 obtains the native runtime environment before creating its private owner socket,
 then directly starts the owned supervisor. It does not parse owner logs.
 
-Build on Linux with Qt6.2 or newer development libraries, CMake, a C++17 compiler,
-OpenSSL development libraries and nlohmann-json headers. Tests also use Python3
+Build on Linux with Qt6.2 or newer development libraries (including the OpenGL
+headers required by QtGui), CMake, a C++17 compiler, OpenSSL development libraries
+and nlohmann-json headers. Tests also use Python3
 and the OpenSSL executable:
 
 ```sh

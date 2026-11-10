@@ -41,7 +41,7 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -w /src ubuntu:22.04 bash -euc '
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            apt-get install -y --no-install-recommends cmake build-essential qt6-base-dev libssl-dev nlohmann-json3-dev python3 openssl
+            apt-get install -y --no-install-recommends cmake build-essential qt6-base-dev libgl-dev libssl-dev nlohmann-json3-dev python3 openssl
             install -d -o 65534 -g 65534 /tmp/traverse-host-build
             runuser -u nobody -- cmake -S /src/host -B /tmp/traverse-host-build -DCMAKE_BUILD_TYPE=Release
             runuser -u nobody -- cmake --build /tmp/traverse-host-build -j2
