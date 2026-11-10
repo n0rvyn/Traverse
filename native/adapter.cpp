@@ -159,14 +159,54 @@ class Adapter {
             return;
         auto text = "Traverse sharing\nPairing code: " + code +
                     "\nCode expires in 5 minutes.\nStop sharing disconnects the browser.";
-        std::vector<std::string> strings = {
-            "traverse-adapter", "--local-dialog", "--parent-pid",  std::to_string(getpid()),
-            "--display",        display,          "--dialog-text", text};
+        // Prepare this fixed, short dialog message before spawning. Closing the
+        // writer gives xmessage EOF; no pairing code enters either argv.
+        struct Input {
+            int descriptors[2] = {-1, -1};
+            Input() {
+                if (pipe2(descriptors, O_CLOEXEC))
+                    throw std::runtime_error("Cannot prepare local sharing dialog");
+            }
+            ~Input() {
+                for (int fd : descriptors)
+                    if (fd >= 0)
+                        close(fd);
+            }
+        } input;
+        size_t offset = 0;
+        while (offset < text.size()) {
+            auto count = write(input.descriptors[1], text.data() + offset, text.size() - offset);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0)
+                throw std::runtime_error("Cannot prepare local sharing dialog text");
+            offset += static_cast<size_t>(count);
+        }
+        close(input.descriptors[1]);
+        input.descriptors[1] = -1;
+        struct Actions {
+            posix_spawn_file_actions_t value;
+            Actions() {
+                if (posix_spawn_file_actions_init(&value))
+                    throw std::runtime_error("Cannot prepare local dialog descriptors");
+            }
+            ~Actions() {
+                posix_spawn_file_actions_destroy(&value);
+            }
+        } actions;
+        if (posix_spawn_file_actions_adddup2(&actions.value, input.descriptors[0], STDIN_FILENO) ||
+            (input.descriptors[0] != STDIN_FILENO &&
+             posix_spawn_file_actions_addclose(&actions.value, input.descriptors[0])))
+            throw std::runtime_error("Cannot prepare local dialog input");
+        std::vector<std::string> strings = {"traverse-adapter", "--local-dialog",
+                                            "--parent-pid",     std::to_string(getpid()),
+                                            "--display",        display};
         std::vector<char *> args;
         for (auto &s : strings)
             args.push_back(s.data());
         args.push_back(nullptr);
-        if (posix_spawn(&dialog, "/proc/self/exe", nullptr, nullptr, args.data(), environ) != 0)
+        if (posix_spawn(&dialog, "/proc/self/exe", &actions.value, nullptr, args.data(), environ) !=
+            0)
             throw std::runtime_error(
                 "Cannot start local stop dialog; use --no-dialog for CLI-only sharing");
     }
@@ -191,6 +231,33 @@ class Adapter {
             return false;
         }
         return true;
+    }
+    bool code_available_locked(Clock::time_point now) const {
+        return armed && !paired && now - code_created <= std::chrono::minutes(5);
+    }
+    json authority_locked() const {
+        auto now = Clock::now();
+        const char *status = !armed                       ? "unarmed"
+                             : paired                     ? "used"
+                             : code_available_locked(now) ? "available"
+                                                          : "expired";
+        json result = {
+            {"schemaVersion", 1},
+            {"pid", getpid()},
+            {"armed", armed},
+            {"paired", paired},
+            {"codeStatus", status},
+            {"observedMonotonicMs",
+             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
+                 .count()}};
+        if (code_available_locked(now)) {
+            result["code"] = code;
+            result["expiresMonotonicMs"] =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    (code_created + std::chrono::minutes(5)).time_since_epoch())
+                    .count();
+        }
+        return result;
     }
     json state_locked() {
         Display *d = XOpenDisplay(display.c_str());
@@ -233,8 +300,7 @@ class Adapter {
                     return;
                 }
                 auto given = body["code"].get<std::string>();
-                if (!armed || paired || Clock::now() - code_created > std::chrono::minutes(5) ||
-                    !equal_secret(code, given)) {
+                if (!code_available_locked(Clock::now()) || !equal_secret(code, given)) {
                     denied++;
                     reply(s, {{"error", "Pairing code invalid, expired or used"}}, 403);
                     return;
@@ -283,6 +349,36 @@ class Adapter {
                 reply(s, state_locked());
             } catch (const std::exception &e) {
                 reply(s, {{"error", e.what()}}, 503);
+            }
+        });
+        server.Get("/owner/authority", [this](const httplib::Request &, httplib::Response &s) {
+            std::lock_guard lock(mutex);
+            reply(s, authority_locked());
+        });
+        server.Post("/owner/new-code", [this](const httplib::Request &r, httplib::Response &s) {
+            std::lock_guard lock(mutex);
+            try {
+                auto body = parse_body(r);
+                if (!body.is_object() || !body.empty()) {
+                    reply(s, {{"error", "New code takes no fields"}}, 400);
+                    return;
+                }
+                if (!armed || paired) {
+                    reply(s, {{"error", "New code unavailable while paired or stopped"}}, 409);
+                    return;
+                }
+                code = random_secret(12);
+                code_created = Clock::now();
+                try {
+                    show_dialog();
+                } catch (...) {
+                    revoke_locked();
+                    stop_dialog();
+                    throw;
+                }
+                reply(s, authority_locked());
+            } catch (const std::exception &) {
+                reply(s, {{"error", "Cannot create a new pairing code"}}, 400);
             }
         });
         server.Post("/input", [this](const httplib::Request &r, httplib::Response &s) {
@@ -355,10 +451,9 @@ int main(int argc, char **argv) {
             auto parent = static_cast<pid_t>(std::stol(args.get("--parent-pid")));
             if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != parent)
                 return 1;
-            auto text = args.get("--dialog-text");
             execlp("xmessage", "xmessage", "-display", name.c_str(), "-title", "Traverse sharing",
                    "-buttons", "Stop sharing:0", "-default", "Stop sharing", "-geometry", "+850+20",
-                   text.c_str(), static_cast<char *>(nullptr));
+                   "-file", "-", static_cast<char *>(nullptr));
             throw std::runtime_error("Cannot execute local sharing dialog");
         }
         if (args.has("--input-worker"))
