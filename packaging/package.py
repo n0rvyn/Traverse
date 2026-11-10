@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -212,7 +213,11 @@ def main():
         rpm_files.append(attribute+'/'+str(path.relative_to(stage)))
     rpm_files.insert(0,'%dir /opt/traverse')
     rpm_files.append('%ghost %attr(0644,root,root) /opt/traverse/share/traverse/registry.bin')
-    spec.write_text(f'''Name: traverse
+    # This is a preassembled private runtime. RPM's generic stripping/compression
+    # would invalidate payload hashes and the NSS providers' paired checksums.
+    spec.write_text(f'''%global __os_install_post %{{nil}}
+%global debug_package %{{nil}}
+Name: traverse
 Version: {version}
 Release: 1
 Summary: Native existing-session Linux desktop sharing in Chrome
@@ -235,8 +240,9 @@ if [ "$1" = 0 ]; then rm -f /opt/traverse/share/traverse/registry.bin; fi
 /usr/bin/traverse-adapter
 /usr/bin/traverse-service
 ''')
-    subprocess.run(['rpmbuild','-bb','--define','_topdir '+str(rpmroot),'--define','_build_id_links none',str(spec)],check=True)
+    subprocess.run(['rpmbuild','-bb','--define','_topdir '+str(rpmroot),'--define','_build_id_links none','--define','_buildhost traverse-builder',str(spec)],check=True)
     for rpm in (rpmroot/'RPMS').rglob('*.rpm'):shutil.copy2(rpm,out/rpm.name)
+    subprocess.run([sys.executable,ROOT/'tests/artifact_payload.py',out],check=True)
     # Download corresponding distribution source archives, including distribution patches.
     distro_sources=args.sources/'distribution-sources';distro_sources.mkdir()
     source_packages=set()
