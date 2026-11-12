@@ -11,7 +11,7 @@ trial=$(mktemp -d "${RUNNER_TEMP:-/tmp}/traverse-gentoo-XXXXXXXX")
 chmod 0755 "$trial"
 name="traverse-gentoo-${trial##*-}"
 repository_name="$name-repository"
-stage_image=gentoo/stage3@sha256:549add81947a81b68f8ff83d78c0e5a6e876da429567aa0c6a32fc24d37ae578
+stage_image=gentoo/stage3@sha256:f0aca526f458cfca27604df37bfab668d311daeed77e08cb55ccbf20f70dde31
 repository_image=gentoo/portage@sha256:95b5c08a2f5211054c8f093ab137b4f7154c76a82df5a2ae90a66641920bd65d
 cleanup() {
     docker rm -f "$name" "$repository_name" >/dev/null 2>&1 || true
