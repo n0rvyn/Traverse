@@ -43,7 +43,9 @@ int main(int argc,char **argv){
             if(fwrite(rgb,1,3,output)!=3){fclose(output);XDestroyImage(image);XCloseDisplay(d);return 4;}
         }
         int failed=fclose(output);XDestroyImage(image);XCloseDisplay(d);
-        if(failed)return 4;fputs("{\"captured\":true}\n",stdout);return 0;
+        if(failed)return 4;
+        fputs("{\"captured\":true}\n",stdout);
+        return 0;
     }
     if(argc==3 && (!strcmp(argv[1],"window") || !strcmp(argv[1],"focus") || !strcmp(argv[1],"close"))){
         Window w=find_window(d,DefaultRootWindow(d),argv[2]);
