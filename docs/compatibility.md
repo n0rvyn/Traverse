@@ -1,5 +1,12 @@
 # Verified compatibility
 
+Current native-window package work has separate local candidate verification;
+those operational records stay outside public history.
+Its x86_64 DEB/RPM/portable install and relaunch checks do not replace the older
+published CI results below. Exact-package Chrome reliability and native ARM
+host-window acceptance are still open. Qt Wayland rendering alone does not
+establish integrated Wayland capture/control.
+
 Package CI run: https://github.com/n0rvyn/Traverse/actions/runs/42711128425
 Source commit: `a99cec1b809a2019db19ddbe35fe5c07f1859aa8`.
 

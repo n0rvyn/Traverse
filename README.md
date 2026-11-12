@@ -12,20 +12,29 @@ The runtime is native. Python is used only for development and test tooling. FD-
 
 ## Packages and CI
 
-DEB/RPM/portable builds and installed-package CI now pass on x86_64 and arm64. See the [verified matrix](docs/compatibility.md); this does not establish every desktop/distribution combination. See [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
+Earlier CI verified DEB/RPM/portable builds and installation on x86_64 and arm64. The new native-host snapshot awaits its updated CI and desktop acceptance. See the [verified matrix](docs/compatibility.md) and [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
 
 ## Build from source
 
-A Linux development environment needs CMake, a C++17 compiler, GStreamer WebRTC/SDP and libsrtp2 development libraries, X11/XTest, OpenSSL, cpp-httplib with TLS and nlohmann JSON. Required plugins include unixfd, ximagesrc, videoconvert, VP8, RTP, libnice, DTLS, SRTP and SCTP. The tested media version is GStreamer 1.26.11 and the tested cpp-httplib version is 0.51.0. Distribution development packages can be older; the private-runtime recipe builds the declared versions.
+A Linux development environment needs CMake, a C++17 compiler, GLib/GIO, GStreamer WebRTC/SDP and libsrtp2 development libraries, X11/XTest, OpenSSL, cpp-httplib with TLS and nlohmann JSON. Required plugins include unixfd, ximagesrc, videoconvert, VP8, RTP, libnice, DTLS, SRTP and SCTP. The tested media version is GStreamer 1.26.11 and the tested cpp-httplib version is 0.51.0. Distribution development packages can be older; the private-runtime recipe builds the declared versions.
 
 ```sh
 cmake -S native -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 ```
 
+Native tests also need the pinned PipeWire 1.6 client headers, libei/libeis 1.5 with the private repairs, libdbus development files, Python 3, PyGObject, Xvfb, `setxkbmap`, `xkbcomp` and `dbus-daemon`; the private-runtime build provides these. Internal Wayland tests exercise real GNOME/KDE permission grants, native frame transport, fresh-connection capture restart, revocation with a held received buffer, and standard portal pointer/button/scroll/keycode delivery. Native EIS sender checks use an actual private-bus grant and a native libeis peer for device readiness, monitor mapping, held-input cleanup, backpressure and revocation. Modern compositor acceptance is in progress. Installed Wayland control still needs EIS/guardian/Chrome integration and the complete host flow. GNOME native EIS input and held-input teardown passed; KDE normal input/Stop passed, but forced EIS-consumer death exposes a compositor pointer-frame defect retained in the evidence.
+
 Review the [libnice reconnect patch](patches/README.md) when using a system libnice. The package build pins its runtime separately so it does not replace the host's media libraries.
 
 ## Run the package
+
+The current package recipe adds the explicit `traverse-host` window for
+hostname/port setup, local certificate export and Settings. See the
+[native host build notes](host/README.md) for the separate Qt target. Run it as the desktop owner; it
+uses system Qt6.2.4+ and remains under package/desktop acceptance. Local
+certificates need no Internet connection: export the public CA certificate and
+trust it once on each Chrome client. The existing CLI is available below.
 
 Run as the desktop owner with a valid `DISPLAY`/`XAUTHORITY` and a private runtime directory. Create your configuration from `/opt/traverse/share/traverse/config.example.json`; set the self-hosted domain and trusted certificate/key paths. The versioned configuration defaults to443 and lets you choose another Chrome-compatible port:
 
@@ -44,6 +53,8 @@ A trusted certificate and a reachable network route are required. Startup verifi
 ## Evidence and limits
 
 On a two-core software-rendered test VM, two repeated visible-Chrome 1280×720 text/pointer workloads measured ~59.3 decoded fps, 1.01–1.06Mb/s video RTP payload and 74–94ms median input-to-decoded-frame response. These are short workload samples, not gaming/4K, GPU or physical input-to-photon benchmarks. Native process CPU was49–55% of host capacity, excluding the display server and desktop application.
+
+Keyboard input follows the remote Linux layout. Physical Chrome key positions produced a/A on US and q/Q on French layouts in an actual WebRTC development-package test, including live layout switching and held-key release. This does not add client-character/IME translation or guarantee browser-reserved shortcuts.
 
 Real X11 tests exercised typing/modifiers, scrolling, pointer mapping, application-window resize, reconnect, local revoke and crash handling. Direct UDP and a scoped authenticated TURN/TLS path were exercised. Private deployment traces are not published in this repository.
 
