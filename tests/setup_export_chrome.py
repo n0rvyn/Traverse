@@ -8,6 +8,7 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 import pwd
 import shutil
 import socket
@@ -17,7 +18,7 @@ import subprocess
 import tempfile
 import time
 
-from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID
+from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, ipc, wait
 from issuer_native import DOMAIN
@@ -65,6 +66,13 @@ def main():
             try:row['nativePeer']=service_peer()
             except (OSError,AssertionError,ValueError) as failure:row['nativePeerError']=type(failure).__name__
             row['windows']={title:window(title) is not None for title in ('Traverse','Traverse Settings','Traverse sharing')}
+            if browser:
+                try:
+                    # Never retain page URLs, code values, HTTP bodies or headers.
+                    row['browser']=browser.evaluate("({documentReady:document.readyState,handlerReady:typeof document.getElementById('pairForm')?.onsubmit==='function',moduleReady:typeof window.traverseStats==='function',hasQuery:location.search.length>0,hasPairError:!!document.getElementById('error')?.textContent,connected:document.body.classList.contains('connected'),videoReady:document.getElementById('desktop')?.readyState})")
+                    row['browserResponses']=[{'path':urlsplit(value['url']).path,'status':value['status']}
+                        for value in browser.cdp.responses if urlsplit(value['url']).path in ('/client.js','/api/pair','/api/offer')]
+                except Exception as failure:row['browserError']=type(failure).__name__
             diagnostics.append(row)
             (evidence/'settings-process-diagnostics.json').write_text(json.dumps(diagnostics,indent=2)+'\n')
         def x11(*args):return json.loads(subprocess.check_output(['/tmp/x11-probe',*map(str,args)],env=env,text=True))
@@ -142,7 +150,8 @@ def main():
             assert 'Traverse exported fixture CA' not in client_run(['certutil','-L','-d','sql:'+str(nss)]).stdout
             client_run(['certutil','-A','-d','sql:'+str(nss),'-t','C,,','-n','Traverse exported fixture CA','-i',str(client_ca)])
             browser=Browser(client,client/'trusted',client_env);assert not browser.navigate(url).get('errorText')
-            browser.wait("document.getElementById('code') && window.isSecureContext",'Export-trusted Chrome pairing page')
+            browser.wait(PAIRING_READY,'Export-trusted Chrome pairing page')
+            diagnostic('before-pair-submit')
             code=ipc(adapter,'/owner/authority')['code'];browser.evaluate("document.getElementById('code').value="+json.dumps(code));browser.evaluate("document.getElementById('pairForm').requestSubmit()");del code
             browser.wait("document.body.classList.contains('connected') && document.getElementById('desktop').videoWidth>0 && document.getElementById('desktop').readyState>=2",'Fresh setup/export ordinary Chrome real video')
             video_size=browser.evaluate("({width:document.getElementById('desktop').videoWidth,height:document.getElementById('desktop').videoHeight})")
@@ -182,7 +191,7 @@ def main():
                     with context.wrap_socket(socket.create_connection(('127.0.0.1',10443),timeout=3),server_hostname=DOMAIN):return True
                 except OSError:return False
             wait(restarted,'Relaunch did not use saved endpoint',timeout=35);assert hashlib.sha256(public.read_bytes()).hexdigest()==root_hash
-            browser=Browser(client,client/'relaunch',client_env);assert not browser.navigate('https://'+DOMAIN+':10443/').get('errorText');browser.wait("document.getElementById('code') && window.isSecureContext",'Same exported trust after next launch')
+            browser=Browser(client,client/'relaunch',client_env);assert not browser.navigate('https://'+DOMAIN+':10443/').get('errorText');browser.wait(PAIRING_READY,'Same exported trust after next launch')
             x11('close','Traverse');process.wait(timeout=15);wait(lambda:not prefix_processes(),'Relaunch Stop left children');browser.close();browser=None
             report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)

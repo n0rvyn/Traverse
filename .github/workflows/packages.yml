@@ -32,6 +32,9 @@ jobs:
           docker pull ubuntu:22.04
           image=$(docker image inspect ubuntu:22.04 --format '{{index .RepoDigests 0}}')
           docker run --rm --sysctl net.ipv4.ip_unprivileged_port_start=1024 --cap-add SYS_PTRACE --cap-add NET_ADMIN -e BUILD_BASE_IMAGE="$image" -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" -v "$PWD:/src" -w /src "$image" bash packaging/build-runtime.sh
+      - name: Test Gentoo native host with ordinary Chrome
+        if: matrix.arch == 'x86_64'
+        run: sudo bash packaging/test-gentoo-host.sh
       - name: Test actual installed DEB and relocated runtime
         run: |
           docker run --rm --sysctl net.ipv4.ip_unprivileged_port_start=1024 --cap-add SYS_PTRACE -v "$PWD:/src" -w /src ubuntu:22.04 bash packaging/test-deb.sh
@@ -45,9 +48,6 @@ jobs:
       - name: Test actual installed RPM
         run: |
           docker run --rm --sysctl net.ipv4.ip_unprivileged_port_start=1024 --cap-add SYS_PTRACE -v "$PWD:/src" -w /src fedora:44 bash packaging/test-rpm.sh
-      - name: Test Gentoo native host with ordinary Chrome
-        if: matrix.arch == 'x86_64'
-        run: sudo bash packaging/test-gentoo-host.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: packages-${{ matrix.arch }}

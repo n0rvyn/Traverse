@@ -17,7 +17,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID
+from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY
 from host_supervisor_test import OwnerFixture
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, free_port, ipc, wait
@@ -143,7 +143,7 @@ def main():
             assert 'Traverse isolated fixture CA' in listed.stdout
             browser=Browser(client,client/'trusted-profile',client_environment)
             assert not browser.navigate(url).get('errorText')
-            browser.wait("document.getElementById('code') && window.isSecureContext",'Trusted Chrome pairing page')
+            browser.wait(PAIRING_READY,'Trusted Chrome pairing page')
             code=ipc(runtime/'traverse/adapter.sock','/owner/authority')['code']
             browser.evaluate("document.getElementById('code').value="+json.dumps(code))
             browser.evaluate("document.getElementById('pairForm').requestSubmit()")
@@ -199,7 +199,7 @@ def main():
             assert restarted['certificate']['fingerprint']==latest['certificate']['fingerprint']
             fresh=Browser(client,client/'post-renewal-profile',client_environment)
             assert not fresh.navigate(url).get('errorText')
-            fresh.wait("document.getElementById('code') && window.isSecureContext",'Fresh ordinary Chrome trusts the renewed leaf')
+            fresh.wait(PAIRING_READY,'Fresh ordinary Chrome trusts the renewed leaf')
             details=[r.get('securityDetails') for r in fresh.cdp.responses if r.get('url')==url and r.get('status')==200]
             assert details and details[-1]['validFrom']==not_before,'Fresh Chrome did not verify the renewed leaf'
             negatives=[]

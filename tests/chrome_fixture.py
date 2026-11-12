@@ -11,6 +11,9 @@ from issuer_native import wait_for
 from installed_standalone import alive, descendants
 
 CLIENT_UID = CLIENT_GID = 65533
+# The module attaches this handler after parsing the form. DOM presence alone
+# permits native form submission before the client code can prevent it.
+PAIRING_READY = "window.isSecureContext && typeof document.getElementById('pairForm')?.onsubmit === 'function'"
 
 
 class CDP:
