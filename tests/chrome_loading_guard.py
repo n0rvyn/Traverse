@@ -12,6 +12,7 @@ import threading
 from urllib.parse import parse_qs
 from chrome_fixture import CDP, CLIENT_UID, CLIENT_GID, ensure_client_identity
 from issuer_native import wait_for
+from installed_standalone import alive, descendants
 
 DUMMY='LOADING_GUARD_FIXTURE'
 
@@ -124,13 +125,17 @@ def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-sta
                         raise
                     finally:
                         release.set()
+                        owned=descendants(process.pid) if os.uname().sysname=='Linux' else set()
                         if channel:
                             try:channel.call('Browser.close')
                             except Exception:pass
                             channel.close()
-                        if process.poll() is None:os.killpg(process.pid,signal.SIGTERM)
-                        try:process.wait(timeout=10)
-                        except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=5)
+                        try:process.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid,signal.SIGTERM)
+                            try:process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=5)
+                        if owned:wait_for(lambda:not any(alive(pid) for pid in owned),'Owned loading guard Chrome children stopped',seconds=10)
         finally:
             release.set();server.shutdown();server.server_close();thread.join(5)
     report={'status':'passed','scope':'Real Chrome loading guard only; dummy code/private profiles; full installed HTTPS/control journey remains separate','cases':results}
