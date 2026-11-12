@@ -82,6 +82,8 @@ env -u LD_LIBRARY_PATH -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR -u CMAKE_PREFIX_P
   cmake -S "$root/host" -B "$work/build-host" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/traverse -DBUILD_TESTING=ON
 env -u LD_LIBRARY_PATH cmake --build "$work/build-host" -j "${BUILD_JOBS:-2}"
 install -d -o nobody -g nogroup "$work/build-host/Testing"
+# Configure-time checks can already have created root-owned Temporary logs.
+chown -R nobody:nogroup "$work/build-host/Testing"
 runuser -u nobody -- env -u LD_LIBRARY_PATH ctest --test-dir "$work/build-host" --output-on-failure --no-tests=error
 DESTDIR="$work/stage" env -u LD_LIBRARY_PATH cmake --install "$work/build-host"
 runuser -u nobody -- env -u LD_LIBRARY_PATH \
