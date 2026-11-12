@@ -3,32 +3,33 @@
 set -euo pipefail
 test "$(id -u)" -eq 0
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-preflight=0
-if test "${1:-}" = --preflight; then preflight=1; else test "$#" -eq 0; fi
+prepare=0
+if test "$#" -eq 1 && test "$1" = --prepare; then prepare=1; else test "$#" -eq 0; fi
 evidence="$source_root/.work/gentoo-chrome"
 mkdir -p "$evidence"
-trial=$(mktemp -d "${RUNNER_TEMP:-/tmp}/traverse-gentoo-XXXXXXXX")
-chmod 0755 "$trial"
-name="traverse-gentoo-${trial##*-}"
+trial=/tmp/traverse-gentoo-ci
+name=traverse-gentoo-ci
 repository_name="$name-repository"
 stage_image=gentoo/stage3@sha256:f0aca526f458cfca27604df37bfab668d311daeed77e08cb55ccbf20f70dde31
 repository_image=gentoo/portage@sha256:95b5c08a2f5211054c8f093ab137b4f7154c76a82df5a2ae90a66641920bd65d
+commit=$(git -C "$source_root" rev-parse HEAD)
+if test "$prepare" -eq 1; then
+# Fail on a pre-existing path rather than reuse or remove anything unknown.
+mkdir -m 0755 "$trial"
+repository_created=0; root_created=0
 cleanup() {
-    docker rm -f "$name" "$repository_name" >/dev/null 2>&1 || true
+    if test "$root_created" -eq 1; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
+    if test "$repository_created" -eq 1; then docker rm -f "$repository_name" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-commit=$(git -C "$source_root" rev-parse HEAD)
-if test "$preflight" -eq 0; then
-    (cd "$source_root/dist" && sha256sum -c SHA256SUMS)
-    archives=("$source_root"/dist/traverse-*-x86_64.tar.gz)
-    test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
-fi
 timeout --signal=TERM --kill-after=15s 300s docker pull "$stage_image"
 timeout --signal=TERM --kill-after=15s 300s docker pull "$repository_image"
 docker create --name "$repository_name" "$repository_image" >/dev/null
-docker create --name "$name" -e TRAVERSE_TEST_PREFLIGHT="$preflight" "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
+repository_created=1
+docker create --name "$name" "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
+root_created=1
 docker cp "$repository_name:/var/db/repos/gentoo" - | docker cp - "$name:/var/db/repos/"
 cat > "$trial/prepare.sh" <<'PREPARE'
 set -euo pipefail
@@ -37,10 +38,6 @@ mkdir -p /etc/portage/package.use /etc/portage/package.license
 printf 'www-client/google-chrome google-chrome\n' > /etc/portage/package.license/traverse-test
 printf 'dev-qt/qtbase X gui widgets\nx11-base/xorg-server xvfb\ndev-libs/nss utils\n' > /etc/portage/package.use/traverse-test
 # Runtime Qt must come from the signed binhost, never an unnoticed local build.
-if test "$TRAVERSE_TEST_PREFLIGHT" -eq 1; then
-    emerge --pretend --verbose --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets]'
-    exit 0
-fi
 emerge --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets]'
 # Xvfb and browser observers are test prerequisites. Portage can build these
 # when a matching binary is absent; package logs and installed USE are retained.
@@ -56,7 +53,6 @@ docker cp "$trial/prepare.sh" "$name:/tmp/prepare.sh"
 # A timeout reaches the EXIT trap, which stops only our named containers.
 timeout --signal=TERM --kill-after=15s 3600s docker start --attach "$name"
 test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" -eq 0
-if test "$preflight" -eq 1; then exit 0; fi
 docker export --output "$trial/rootfs.tar" "$name"
 mkdir "$trial/root"
 python3 - "$trial/rootfs.tar" "$trial/root" <<'EXTRACT'
@@ -65,6 +61,10 @@ import os, sys, tarfile
 # absolute links to the runner during extraction. data_filter still rejects
 # traversal, special files and links that escape the new root.
 def confined(member, destination):
+    # The journey supplies its own private device filesystem. Never restore
+    # image device nodes, sockets or symlinks from this subtree on the runner.
+    if member.name.startswith('dev/'):
+        return None
     if member.issym() and member.linkname.startswith('/'):
         target=os.path.normpath(member.linkname).lstrip('/')
         member=member.replace(linkname=os.path.relpath(target, os.path.dirname(member.name) or '.'))
@@ -72,6 +72,24 @@ def confined(member, destination):
 with tarfile.open(sys.argv[1]) as archive:
     archive.extractall(sys.argv[2], filter=confined)
 EXTRACT
+umask 077
+printf '%s\n%s\n%s\n' "$stage_image" "$repository_image" "$commit" > "$trial/prepared"
+exit 0
+fi
+python3 - "$trial" "$stage_image" "$repository_image" "$commit" <<'PREPARED'
+import stat, sys
+from pathlib import Path
+trial=Path(sys.argv[1])
+for path in (trial, trial/'root'):
+    info=path.lstat()
+    assert stat.S_ISDIR(info.st_mode) and info.st_uid==0 and info.st_mode & 0o777==0o755
+info=(trial/'prepared').lstat()
+assert stat.S_ISREG(info.st_mode) and info.st_uid==0 and info.st_mode & 0o777==0o600
+assert (trial/'prepared').read_text().splitlines()==sys.argv[2:]
+PREPARED
+(cd "$source_root/dist" && sha256sum -c SHA256SUMS)
+archives=("$source_root"/dist/traverse-*-x86_64.tar.gz)
+test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
 original_mnt=$(readlink /proc/self/ns/mnt)
 original_net=$(readlink /proc/self/ns/net)
 original_pid=$(readlink /proc/self/ns/pid)
