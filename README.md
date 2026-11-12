@@ -2,7 +2,7 @@
 
 Native Linux desktop sharing in ordinary Chrome, built with C++17, GStreamer and WebRTC. No browser extension and no RDP/VNC wrapper.
 
-**Status:** working existing-X11-session core with DEB/RPM/portable packages. Single-port setup, native host controls, automatic public-URL checks, native Wayland/GNOME/KDE verification and hardware-encoding optimization are active development work. No stable release has been published.
+**Status:** working existing-X11-session core and native host window with DEB/RPM/portable development packages. Single-port HTTPS, local certificate setup and Chrome control passed installed-package checks. Automatic public-URL checks, native Wayland/GNOME/KDE integration and hardware-encoding optimization remain active work. No stable release has been published.
 
 ## How it works
 
@@ -12,7 +12,7 @@ The runtime is native. Python is used only for development and test tooling. FD-
 
 ## Packages and CI
 
-Earlier CI verified DEB/RPM/portable builds and installation on x86_64 and arm64. The new native-host snapshot awaits its updated CI and desktop acceptance. See the [verified matrix](docs/compatibility.md) and [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
+[CI run 43248280700](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) verified native host DEB/RPM/portable builds and installed X11 lifecycle on x86_64 and arm64, plus an ordinary Chrome setup/export/trust/video/control/Settings/Stop/relaunch journey on x86_64. GNOME/KDE Wayland integration and physical-hardware acceptance remain open. See the [verified matrix](docs/compatibility.md) and [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
 
 ## Build from source
 
@@ -29,12 +29,21 @@ Review the [libnice reconnect patch](patches/README.md) when using a system libn
 
 ## Run the package
 
-The current package recipe adds the explicit `traverse-host` window for
-hostname/port setup, local certificate export and Settings. See the
+The development packages include the explicit `traverse-host` window for
+hostname/port setup, local certificate export and Settings:
+
+```sh
+traverse-host
+```
+
+On first launch, enter the hostname/address and port, then select Start sharing.
+After local HTTPS is ready, export the public CA certificate and trust that file
+once on each Chrome client. Open the Remote URL in Chrome and enter the pairing
+code from Linux. No handwritten JSON is needed for this path. See the
 [native host build notes](host/README.md) for the separate Qt target. Run it as the desktop owner; it
-uses system Qt6.2.4+ and remains under package/desktop acceptance. Local
-certificates need no Internet connection: export the public CA certificate and
-trust it once on each Chrome client. The existing CLI is available below.
+uses system Qt6.2.4+. Installed synthetic-X11 package checks passed; complete
+desktop and physical-hardware acceptance remains open. Local certificate
+generation works offline. The existing CLI is available below.
 
 Run as the desktop owner with a valid `DISPLAY`/`XAUTHORITY` and a private runtime directory. Create your configuration from `/opt/traverse/share/traverse/config.example.json`; set the self-hosted domain and trusted certificate/key paths. The versioned configuration defaults to443 and lets you choose another Chrome-compatible port:
 
@@ -48,7 +57,7 @@ Open the displayed URL in ordinary Chrome and enter the pairing code shown local
 
 Existing configurations without `schemaVersion` retain their original HTTPS/media ports; `config.legacy.example.json` documents that format. A port conflict fails without replacing an existing service or selecting a different port. Portable archives have no binding capabilities and can use an editable high port. Native-package low-port support uses a constrained helper with the original desktop UID/GID.
 
-A trusted certificate and a reachable network route are required. Startup verifies its own HTTPS endpoint and configured hostname; this local check does not prove public DNS, firewall or NAT reachability. Automatic external checks and integrated first-run host controls remain on the [roadmap](docs/roadmap.md). A page reload currently requires pairing again; local Stop sharing remains authoritative.
+A trusted certificate and a reachable network route are required. Startup verifies its own HTTPS endpoint and configured hostname; this local check does not prove public DNS, firewall or NAT reachability. First-run host controls are included in the development packages. Automatic external checks and failure notifications remain on the [roadmap](docs/roadmap.md). A page reload currently requires pairing again; local Stop sharing remains authoritative.
 
 ## Evidence and limits
 

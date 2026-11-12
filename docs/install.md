@@ -2,14 +2,34 @@
 
 Development builds are available from the successful [CI runs](https://github.com/n0rvyn/Traverse/actions/workflows/ci.yml). Choose the artifact for `x86_64` or `aarch64`; check `SHA256SUMS` before installation. No stable release has been published.
 
-The working tree also builds a separate native `traverse-host` entry with system
-Qt6.2.4+ and OpenSSL3; it needs no Python, compiler or Go installation to run.
-This entry is currently in private x86_64 candidates, not the published builds
-above. Installed DEB/RPM and relocated portable first-run checks passed. The exact
-package Chrome session is under diagnosis, and native ARM and full desktop
-acceptance remain open. Local candidate evidence stays outside public history; hosted CI acceptance is pending.
+The [verified development build](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) includes the native `traverse-host` entry on x86_64 and arm64. It uses system Qt6.2.4+ and OpenSSL3; no Python, compiler or Go installation is needed to run it. Installed DEB/RPM and portable lifecycle checks passed on both architectures. The complete ordinary Chrome journey passed on an isolated x86_64 X11 display. Normal GNOME/KDE Wayland integration, Gentoo system-Qt host-window acceptance and physical-hardware latency remain open.
 
-DEB packages use `apt install ./traverse_…deb`; RPM packages use `dnf install ./traverse-…rpm`. The current build baseline requires Linux with glibc2.35 or later. The package contains its own media libraries and does not replace the desktop's GStreamer installation. An existing X11 desktop remains required. HTTPS supports locally generated certificates, supplied trusted material or explicitly configured automatic enrollment.
+## Install and start sharing
+
+Download the artifact matching your CPU architecture from that successful run, extract its ZIP, and verify `sha256sum -c SHA256SUMS`. Install the native package so the package manager resolves its system UI dependencies:
+
+```sh
+# Debian/Ubuntu x86_64; arm64 uses traverse_0.1.0_arm64.deb
+sudo apt install ./traverse_0.1.0_amd64.deb
+
+# Fedora x86_64; ARM64 uses traverse-0.1.0-1.aarch64.rpm
+sudo dnf install ./traverse-0.1.0-1.x86_64.rpm
+```
+
+Run `traverse-host` as the owner of the existing X11 desktop. On first launch:
+
+1. Enter the hostname/address Chrome will use. Keep port443 or enter your own unused Chrome-compatible port. A conflict is reported without changing the existing service.
+2. Keep locally generated certificates selected, or choose existing certificates, then click Start sharing.
+3. Once local HTTPS is ready, use Export CA certificate. Trust only that public certificate once on each Chrome client; the private CA key remains on Linux. The app does not install client trust for you. Supplied certificates already trusted by Chrome do not need this export step.
+4. Open the displayed Remote URL in Chrome and enter the pairing code shown on Linux. Stop sharing, or closing the host window, ends sharing.
+
+Settings saves domain, port and certificate changes for the next launch. It shows “Saved. Changes take effect the next time you launch Traverse.” Sharing continues on the active settings until stopped.
+
+Local certificate generation works without Internet access. The hostname still needs to resolve to the host from the client, and the selected TCP/UDP port needs a working network route. Local HTTPS readiness does not prove public reachability.
+
+## Runtime and advanced configuration
+
+The current build baseline requires Linux with glibc2.35 or later. The package contains its own media libraries and does not replace the desktop's GStreamer installation. An existing X11 desktop remains required. HTTPS supports locally generated certificates, supplied trusted material or explicitly configured automatic enrollment.
 
 Installation runs an encrypted synthetic-media check and creates a root-owned plugin registry. It starts no screen capture or network listener. A small system-libc helper receives only `CAP_NET_BIND_SERVICE`; it accepts only the installed service and TLS front end, preserves the desktop user's UID/GID, checks ownership/write permissions throughout the private runtime and rebuilds its environment from an allowlist. The TLS front end drops its capabilities before creating any worker threads. The media service retains only port-binding permission for ICE socket creation and rebinds. The helper grants no privilege to the adapter or desktop.
 
@@ -19,14 +39,8 @@ Portable archives do not carry file capabilities. Supplied-certificate mode on a
 
 Create your configuration from `/opt/traverse/share/traverse/config.example.json` and supply the domain, certificate and private-key paths. New `schemaVersion: 1` configurations default to443; `port` is editable, and `basePath` optionally places the client under a URL prefix. Run `traverse --config FILE --check-config`, then `traverse --config FILE` as the desktop owner. TLS paths can be absolute or relative to that new configuration file. Open the displayed URL in Chrome and use the local pairing code.
 
-The standalone endpoint needs the chosen TCP and UDP port. TCP carries HTTPS and authenticated TURN/TLS fallback; direct WebRTC media uses UDP. Startup checks actual TCP/UDP binding availability and verifies local HTTPS trust and hostname before displaying readiness. It does not yet prove public reachability. A conflict fails without changing the existing service or choosing a different port. Native host controls are under acceptance; external-check notifications remain in development.
+The standalone endpoint needs the chosen TCP and UDP port. TCP carries HTTPS and authenticated TURN/TLS fallback; direct WebRTC media uses UDP. Startup checks actual TCP/UDP binding availability and verifies local HTTPS trust and hostname before displaying readiness. It does not yet prove public reachability. A conflict fails without changing the existing service or choosing a different port. Native host controls passed the installed synthetic-X11 paths described above; external-check notifications remain in development.
 
-The approved native first-run form selects locally generated certificates and
-retains an existing-certificate option. It asks for the hostname/address and an
-editable port defaulting to443. Export the public CA certificate and deliberately
-trust it once on each Chrome client; the private CA key stays on Linux. This
-setup needs no Internet connection. Settings saves for the next launch and
-shows “Saved. Changes take effect the next time you launch Traverse.”
 The supplied-certificate commands above remain available. The separate automatic
 backend requires an explicit CA directory and exact local terms approval; no
 public CA provider or terms acceptance is inferred from installation. Public CA

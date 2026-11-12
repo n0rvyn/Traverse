@@ -1,13 +1,6 @@
 # Native host window
 
-This is the native host development target for the approved setup, sharing,
-Settings and public CA export windows. Private x86_64 package candidates now
-include the explicit `traverse-host` entry; published CI artifacts have not yet
-been updated. Actual installed DEB/RPM and relocated portable setup, native input cleanup,
-Stop/relaunch and owner-data preservation checks passed in isolated X11 tests.
-The exact-package Chrome journey currently fails when the supervisor loses
-desktop-adapter IPC. Desktop and remaining package acceptance stay open; see
-local verification records, which stay outside public history.
+This is the native host target for the approved setup, sharing, Settings and public CA export windows. [CI run 43248280700](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) includes `traverse-host` in x86_64 and arm64 development packages. Actual installed DEB/RPM and relocated portable setup, native input cleanup, Stop/relaunch and owner-data preservation checks passed in isolated X11 tests. The x86_64 installed-package ordinary Chrome journey also passed native setup/export, client trust, video/key control, Settings continuity and relaunch. Full GNOME/KDE, Gentoo system-Qt host-window and physical-hardware acceptance remain open.
 
 The UI links system Qt6 and runs separately from the private media runtime. It
 obtains the native runtime environment before creating its private owner socket,
@@ -34,7 +27,7 @@ certificates. The separate
 clipboard, the native runtime and a private CA under UID65534 in a disposable
 Linux container/namespace. It must not run against an operator's existing host.
 
-The internal entry requires a private runtime prefix (`--prefix`). An absent
+Run the installed `traverse-host` wrapper as the desktop owner; it supplies the private runtime prefix and clears media-library injection from the UI environment. Direct development use of the internal executable requires `--prefix`. An absent
 configuration opens setup; `--config` selects an explicit path, otherwise the
 path is `$XDG_CONFIG_HOME/traverse/config.json` or
 `$HOME/.config/traverse/config.json`. Setup creates the file only after Start
@@ -49,8 +42,8 @@ pre-commit failure, uncertain replacement, preserving configured automatic
 certificate fields, and closing during pending reads. A separate real window
 journey over the exact portable runtime checks pairing and held input through
 Save, unchanged active URL/clipboard/token, next-launch port/root persistence,
-and Stop/close/GUI death while Settings is open. This is development-target
-verification, not installed first-run, GNOME/KDE or physical-latency acceptance.
+and Stop/close/GUI death while Settings is open. The hosted CI journey above additionally verifies the installed first-run path.
+Neither scope establishes GNOME/KDE or physical-latency acceptance.
 
 Local HTTPS readiness enables Export CA certificate. The standard save dialog
 exports only the active checked public root; it never installs client trust.
@@ -66,4 +59,4 @@ Settings continuity, Stop release/cleanup, and next-launch new-port/same-CA trus
 Light/dark and 640×480 at 200% checks include visible actions, scrollable fields,
 save/cancel/overwrite, actual disk errors and pending-write cleanup. These runs
 use the current native app/launcher over a byte-verified portable runtime basis,
-not a newly assembled UI package. No real Mac/system trust was changed.
+not a newly assembled UI package. The newer hosted CI journey uses the actual installed DEB package. Neither path changes real Mac/system trust.
