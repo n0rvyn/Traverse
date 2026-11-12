@@ -23,6 +23,12 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.source-ref || github.sha }}
+      - name: Check Chrome loading guard before package compilation
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-websocket xvfb xauth
+          python3 tests/chrome_loading_guard.py --assets web --evidence .work/installed-chrome
       - name: Prepare Gentoo native host fixture
         if: matrix.arch == 'x86_64'
         run: sudo bash packaging/test-gentoo-host.sh --prepare
@@ -79,6 +85,7 @@ jobs:
             .work/gentoo-chrome/*summary.json
             .work/gentoo-chrome/settings-process-diagnostics.json
             .work/gentoo-chrome/fresh-export-chrome.png
+            .work/gentoo-chrome/loading-guard-*.png
             .work/gentoo-chrome/fresh-export-native.ppm
             .work/gentoo-chrome/failure-after-consumed-pairing.ppm
           if-no-files-found: ignore

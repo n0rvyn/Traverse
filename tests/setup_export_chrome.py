@@ -31,6 +31,8 @@ def main():
     port=int(os.environ.get('TRAVERSE_TEST_CHROME_INITIAL_PORT','9443'));origin='https://'+DOMAIN+(':'+str(port) if port!=443 else '')
     executable=Path(os.environ['TRAVERSE_TEST_HOST_EXECUTABLE']);evidence=Path(os.environ['TRAVERSE_TEST_EVIDENCE']);evidence.mkdir(exist_ok=True)
     ensure_client_identity()
+    from chrome_loading_guard import verify_loading_guard
+    verify_loading_guard(PREFIX/'share/traverse/web', evidence)
     with tempfile.TemporaryDirectory(prefix='setup-chrome-') as temporary:
         root=Path(temporary);root.chmod(0o755)
         host=root/'host';client=root/'client'

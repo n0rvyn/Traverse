@@ -89,3 +89,5 @@ async function snapshotStats() {
 // Read-only diagnostics used by the measurement harness; no privileged control API.
 window.traverseStats=snapshotStats;
 setInterval(async()=>{try{const s=await snapshotStats();if(!s?.incoming)return;const v=s.incoming;let rate='';if(lastStats){const dt=(v.timestamp-lastStats.timestamp)/1000;rate=`${((v.bytesReceived-lastStats.bytesReceived)*8/dt/1e6).toFixed(2)} Mb/s`;}$('metrics').textContent=`${v.framesPerSecond??0} fps · ${rate} · input RTT ${rtts.length?Math.round(rtts.at(-1)):'–'} ms · ${s.remote?.candidateType??'ICE'}`;lastStats=v;}catch{}},1000);
+status('Not connected');
+$('connect').disabled=false;
