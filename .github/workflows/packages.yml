@@ -61,6 +61,7 @@ jobs:
             .work/installed-chrome/*pressure.jsonl
             .work/installed-chrome/*diagnostics.json
             .work/installed-chrome/*.png
+            .work/installed-chrome/fresh-export-native.ppm
             .work/installed-chrome/failure-after-consumed-pairing.ppm
           if-no-files-found: ignore
       - name: Preserve synthetic installed-test failure images

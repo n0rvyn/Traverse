@@ -111,5 +111,7 @@ from pathlib import Path
 report=json.loads(Path(sys.argv[1]).read_text())
 assert report['status']=='passed' and report['packagedEntry']
 assert report['sourceVideoSize']=={'width':1280,'height':1024}
+peer=report['nativePeerState']
+assert peer['peerActive'] and peer['controlOpen'] and peer['rtcState']=='connected'
 VERIFY
 CHECK

@@ -12,8 +12,10 @@ import pwd
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import tempfile
+import time
 
 from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
@@ -60,6 +62,8 @@ def main():
                 state=ipc(adapter,'/state')
                 row['adapter']={key:state[key] for key in ('pid','armed','paired','capturing','accepted','denied') if key in state}
             except OSError as failure:row['adapterError']=type(failure).__name__
+            try:row['nativePeer']=service_peer()
+            except (OSError,AssertionError,ValueError) as failure:row['nativePeerError']=type(failure).__name__
             row['windows']={title:window(title) is not None for title in ('Traverse','Traverse Settings','Traverse sharing')}
             diagnostics.append(row)
             (evidence/'settings-process-diagnostics.json').write_text(json.dumps(diagnostics,indent=2)+'\n')
@@ -67,6 +71,20 @@ def main():
         def window(title):
             r=subprocess.run(['/tmp/x11-probe','window',title],env=env,capture_output=True,text=True)
             return json.loads(r.stdout) if r.returncode==0 else None
+        def service_peer():
+            paths=list((host/'runtime/traverse').glob('o-*/s'));assert len(paths)==1,'Owned service socket not unique'
+            connection=HTTPConnection('localhost',timeout=3);connection.sock=socket.socket(socket.AF_UNIX)
+            connection.sock.settimeout(3)
+            try:
+                connection.sock.connect(str(paths[0]))
+                pid,uid,_=struct.unpack('3i',connection.sock.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
+                assert uid==65534 and pid in descendants(process.pid),'Private peer is not an owned service'
+                assert Path('/proc',str(pid),'exe').resolve()==PREFIX/'libexec/traverse/traverse-service'
+                connection.request('GET','/state');response=connection.getresponse();value=json.loads(response.read())
+                assert response.status==200 and value['schemaVersion']==1 and value['pid']==pid
+                assert 0<=int(time.monotonic()*1000)-value['observedMonotonicMs']<=2000,'Private peer observation is stale'
+                return {key:value[key] for key in ('schemaVersion','pid','observedMonotonicMs','generation','peerPresent','peerActive','rtcState','controlOpen')}
+            finally:connection.close()
         def text(value):
             for ch in value:
                 shifted=ch=='_' or ch.isupper()
@@ -129,6 +147,13 @@ def main():
             browser.wait("document.body.classList.contains('connected') && document.getElementById('desktop').videoWidth>0 && document.getElementById('desktop').readyState>=2",'Fresh setup/export ordinary Chrome real video')
             video_size=browser.evaluate("({width:document.getElementById('desktop').videoWidth,height:document.getElementById('desktop').videoHeight})")
             pairing_consumed=True
+            native_peer=None
+            def native_connected():
+                nonlocal native_peer
+                try:native_peer=service_peer()
+                except OSError:return False
+                return native_peer['peerActive'] and native_peer['controlOpen'] and native_peer['rtcState']=='connected'
+            wait(native_connected,'Native service did not report established Chrome control')
             browser.evaluate("document.getElementById('desktop').focus()");browser.key('keyDown','Shift','ShiftLeft',16)
             wait(lambda:x11('query')['shift']==1,'Fresh exported-CA Chrome input missing');browser.key('keyUp','Shift','ShiftLeft',16);wait(lambda:x11('query')['shift']==0,'Initial Chrome input release missing')
             frames=browser.evaluate("document.getElementById('desktop').getVideoPlaybackQuality().totalVideoFrames")
@@ -141,7 +166,11 @@ def main():
             assert https()==200 and ipc(adapter,'/state')['paired'];x11('close','Traverse Settings')
             browser.wait("document.getElementById('desktop').getVideoPlaybackQuality().totalVideoFrames>"+str(frames),'Video did not continue through next-launch Settings save')
             browser.evaluate("document.getElementById('desktop').focus()");browser.key('keyDown','Shift','ShiftLeft',16);wait(lambda:x11('query')['shift']==1,'Controller lost after Settings save')
+            media_time=browser.evaluate("document.getElementById('desktop').currentTime")
+            browser.wait("document.body.classList.contains('connected') && document.getElementById('desktop').currentTime>"+str(media_time+1),'Sustained live video after Settings save')
+            wait(native_connected,'Native service lost connected state after Settings save')
             # Pairing is consumed before any retained desktop screenshot.
+            x11('capture',str(evidence/'fresh-export-native.ppm'))
             image=browser.send('Page.captureScreenshot',{'format':'png'})['data'];(evidence/'fresh-export-chrome.png').write_bytes(base64.b64decode(image))
             version=browser.version;owned=descendants(process.pid);assert owned
             x11('close','Traverse');wait(lambda:x11('query')['shift']==0,'Actual main Stop left Chrome-held input',timeout=2);process.wait(timeout=15)
@@ -155,7 +184,7 @@ def main():
             wait(restarted,'Relaunch did not use saved endpoint',timeout=35);assert hashlib.sha256(public.read_bytes()).hexdigest()==root_hash
             browser=Browser(client,client/'relaunch',client_env);assert not browser.navigate('https://'+DOMAIN+':10443/').get('errorText');browser.wait("document.getElementById('code') && window.isSecureContext",'Same exported trust after next launch')
             x11('close','Traverse');process.wait(timeout=15);wait(lambda:not prefix_processes(),'Relaunch Stop left children');browser.close();browser=None
-            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','sourceVideoSize':video_size,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
+            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)
         except BaseException:
             diagnostic('failure-before-cleanup')
