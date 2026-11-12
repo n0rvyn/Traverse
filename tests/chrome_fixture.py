@@ -1,7 +1,10 @@
 """Disposable ordinary Chrome/CDP fixture; no TLS or sandbox bypass flags."""
+import grp
 import json
 import os
 from pathlib import Path
+import pwd
+import shutil
 import signal
 import subprocess
 import time
@@ -14,6 +17,26 @@ CLIENT_UID = CLIENT_GID = 65533
 # The module attaches this handler after parsing the form. DOM presence alone
 # permits native form submission before the client code can prevent it.
 PAIRING_READY = "window.isSecureContext && typeof document.getElementById('pairForm')?.onsubmit === 'function'"
+
+
+def ensure_client_identity():
+    from installed_managed_certificates import require_disposable_environment
+    require_disposable_environment()
+    try:account=pwd.getpwuid(CLIENT_UID)
+    except KeyError:account=None
+    if account:
+        assert account.pw_name=='traverse-client-fixture' and account.pw_gid==CLIENT_GID, 'Fixture UID belongs to another account'
+    try:group=grp.getgrgid(CLIENT_GID)
+    except KeyError:
+        subprocess.run(['groupadd','--gid',str(CLIENT_GID),'traverse-client-fixture'],check=True,capture_output=True)
+    else:
+        assert group.gr_name in ('traverse-client-fixture','nogroup','nobody'), 'Unexpected existing fixture group'
+    if account is None:
+        shell=shutil.which('nologin');assert shell
+        subprocess.run(['useradd','--uid',str(CLIENT_UID),'--gid',str(CLIENT_GID),'--no-create-home',
+            '--home-dir','/nonexistent','--shell',shell,'traverse-client-fixture'],check=True,capture_output=True)
+    account=pwd.getpwuid(CLIENT_UID)
+    assert account.pw_name=='traverse-client-fixture' and account.pw_gid==CLIENT_GID
 
 
 class CDP:

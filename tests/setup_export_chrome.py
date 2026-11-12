@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
-import pwd
 import shutil
 import socket
 import ssl
@@ -18,7 +17,7 @@ import subprocess
 import tempfile
 import time
 
-from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY
+from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY, ensure_client_identity
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, ipc, wait
 from issuer_native import DOMAIN
@@ -31,10 +30,7 @@ def main():
     assert not any(row.split()[1]=='00000000' for row in Path('/proc/net/route').read_text().splitlines()[1:]),'Unexpected Internet route'
     port=int(os.environ.get('TRAVERSE_TEST_CHROME_INITIAL_PORT','9443'));origin='https://'+DOMAIN+(':'+str(port) if port!=443 else '')
     executable=Path(os.environ['TRAVERSE_TEST_HOST_EXECUTABLE']);evidence=Path(os.environ['TRAVERSE_TEST_EVIDENCE']);evidence.mkdir(exist_ok=True)
-    try:pwd.getpwuid(CLIENT_UID)
-    except KeyError:
-        subprocess.run(['groupadd','--gid',str(CLIENT_GID),'traverse-client-fixture'],check=True,capture_output=True)
-        subprocess.run(['useradd','--uid',str(CLIENT_UID),'--gid',str(CLIENT_GID),'--no-create-home','--home-dir','/nonexistent','--shell','/usr/sbin/nologin','traverse-client-fixture'],check=True,capture_output=True)
+    ensure_client_identity()
     with tempfile.TemporaryDirectory(prefix='setup-chrome-') as temporary:
         root=Path(temporary);root.chmod(0o755)
         host=root/'host';client=root/'client'

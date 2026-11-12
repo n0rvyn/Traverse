@@ -6,7 +6,6 @@ import http.server
 import json
 import os
 from pathlib import Path
-import pwd
 import shutil
 import signal
 import socket
@@ -17,7 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY
+from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY, ensure_client_identity
 from host_supervisor_test import OwnerFixture
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, free_port, ipc, wait
@@ -72,12 +71,7 @@ def main():
     routes6=[line.split() for line in Path('/proc/net/ipv6_route').read_text().splitlines()]
     assert not any(row[0]=='0'*32 and row[1]=='00' and int(row[8],16)&1 and not int(row[8],16)&0x200
                    for row in routes6),'Unexpected usable IPv6 default route'
-    try:
-        assert pwd.getpwuid(CLIENT_UID).pw_name=='traverse-client-fixture'
-    except KeyError:
-        subprocess.run(['groupadd','--gid',str(CLIENT_GID),'traverse-client-fixture'],check=True,capture_output=True)
-        subprocess.run(['useradd','--uid',str(CLIENT_UID),'--gid',str(CLIENT_GID),'--no-create-home',
-            '--home-dir','/nonexistent','--shell','/usr/sbin/nologin','traverse-client-fixture'],check=True,capture_output=True)
+    ensure_client_identity()
     args.evidence.mkdir(parents=True,exist_ok=True)
     report={'status':'failed','scope':'Exact installed package, ordinary Chrome, separate UID/home/NSS DB; no system/Mac trust change'}
     with tempfile.TemporaryDirectory(prefix='traverse-chrome-local-') as temporary:

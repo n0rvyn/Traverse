@@ -28,9 +28,10 @@ timeout --signal=TERM --kill-after=15s 300s docker pull "$stage_image"
 timeout --signal=TERM --kill-after=15s 300s docker pull "$repository_image"
 docker create --name "$repository_name" "$repository_image" >/dev/null
 repository_created=1
-docker create --name "$name" "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
+docker create --name "$name" --sysctl net.ipv4.ip_unprivileged_port_start=1024 "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
 root_created=1
 docker cp "$repository_name:/var/db/repos/gentoo" - | docker cp - "$name:/var/db/repos/"
+git -C "$source_root" archive HEAD tests | docker cp - "$name:/tmp/"
 cat > "$trial/prepare.sh" <<'PREPARE'
 set -euo pipefail
 mkdir -p /etc/portage/package.use /etc/portage/package.license
@@ -48,6 +49,14 @@ emerge --nospinner --getbinpkg --jobs=2 --load-average=2 \
 test -x /usr/bin/Xvfb && test -x /usr/bin/xvfb-run
 test -x /usr/bin/google-chrome-stable && test -x /usr/bin/certutil
 python3 -c 'import websocket'
+PYTHONPATH=/tmp/tests python3 - <<'CLIENT'
+import grp,json,pwd
+from chrome_fixture import ensure_client_identity,CLIENT_UID,CLIENT_GID
+ensure_client_identity()
+ensure_client_identity()  # Reopening the same prepared root is idempotent.
+print(json.dumps({'fixtureClient':pwd.getpwuid(CLIENT_UID).pw_name,'uid':CLIENT_UID,
+    'gid':CLIENT_GID,'group':grp.getgrgid(CLIENT_GID).gr_name}),flush=True)
+CLIENT
 PREPARE
 docker cp "$trial/prepare.sh" "$name:/tmp/prepare.sh"
 # A timeout reaches the EXIT trap, which stops only our named containers.
