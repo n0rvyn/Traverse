@@ -42,6 +42,7 @@ mv /tmp/relocated/traverse/lib/libsoftokn3.so.missing /tmp/relocated/traverse/li
 # The default adapter must show its real Stop sharing dialog, and release on local activation.
 gcc /src/tests/x11_input_probe.c -o /tmp/x11-probe -lX11 -lXtst
 gcc /src/tests/x11_capture.c -o /tmp/x11-capture -lX11
+gcc -shared -fPIC -Wall -Wextra -Werror /src/tests/launcher_probe_cancel.c -o /tmp/connect_cancel.so -ldl
 test -z "$(getcap /opt/traverse/libexec/traverse/traverse-host)"
 TRAVERSE_TEST_PRESERVE_HOST_DATA=/tmp/traverse-preserved-host-data xvfb-run -a python3 /src/tests/installed_host_window.py
 python3 /src/tests/installed_host_persistence.py record /tmp/traverse-preserved-host-data /tmp/traverse-host-owner-snapshot.json
@@ -58,6 +59,7 @@ xvfb-run -a python3 /src/tests/installed_dialog.py
 xvfb-run -a python3 /src/tests/installed_launcher.py
 xvfb-run -a python3 /src/tests/installed_standalone.py
 bash /src/packaging/test-host-owner.sh
+xvfb-run -a python3 /src/tests/installed_startup_cancel.py
 xvfb-run -a python3 /src/tests/installed_managed_certificates.py
 xvfb-run -a -s '-screen 0 1280x800x24 -extension XTEST' python3 /src/tests/installed_guardian_startup.py
 apt-get remove -y traverse

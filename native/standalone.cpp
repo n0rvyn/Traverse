@@ -714,6 +714,8 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+    if (stopping)
+        return 0;
     if (!ready)
         throw std::runtime_error("Local HTTPS endpoint did not become ready");
     https_verified = true;

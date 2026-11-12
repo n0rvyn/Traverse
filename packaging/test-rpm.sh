@@ -13,6 +13,7 @@ test "$(stat -c '%u:%g:%a' /opt/traverse/share/traverse/registry.bin)" = '0:0:64
 rpm -V traverse
 gcc /src/tests/x11_input_probe.c -o /tmp/x11-probe -lX11 -lXtst
 gcc /src/tests/x11_capture.c -o /tmp/x11-capture -lX11
+gcc -shared -fPIC -Wall -Wextra -Werror /src/tests/launcher_probe_cancel.c -o /tmp/connect_cancel.so -ldl
 test -z "$(getcap /opt/traverse/libexec/traverse/traverse-host)"
 TRAVERSE_TEST_PRESERVE_HOST_DATA=/tmp/traverse-preserved-host-data xvfb-run -a python3 /src/tests/installed_host_window.py
 python3 /src/tests/installed_host_persistence.py record /tmp/traverse-preserved-host-data /tmp/traverse-host-owner-snapshot.json
@@ -24,6 +25,7 @@ xvfb-run -a python3 /src/tests/installed_local_certificates.py
 TRAVERSE_TEST_APP_PORT=9443 xvfb-run -a python3 /src/tests/installed_local_certificates.py
 export TRAVERSE_TEST_FAILURE_ARTIFACTS=/src/.work/managed-failure-images
 bash /src/packaging/test-host-owner.sh
+xvfb-run -a python3 /src/tests/installed_startup_cancel.py
 xvfb-run -a python3 /src/tests/installed_managed_certificates.py
 dnf remove -y traverse
 python3 /src/tests/installed_host_persistence.py check /tmp/traverse-preserved-host-data /tmp/traverse-host-owner-snapshot.json
