@@ -36,6 +36,7 @@ struct ConfigurationIo {
     virtual ssize_t write(int fd,const void *data,size_t count) const;
     virtual int sync(int fd) const;
     virtual int replace(int directory,const char *temporary,const char *destination) const;
+    virtual int publishNew(int directory,const char *temporary,const char *destination) const;
 };
 class ConfigurationStore {
     std::filesystem::path path;
@@ -46,6 +47,7 @@ class ConfigurationStore {
     explicit ConfigurationStore(std::filesystem::path location,
         std::shared_ptr<ConfigurationIo> operations=std::make_shared<ConfigurationIo>());
     ConfigurationSnapshot read();
+    ConfigurationSave create(const nlohmann::json &draft);
     ConfigurationSave save(const ConfigurationSnapshot &base,const nlohmann::json &draft);
 };
 } // namespace traverse

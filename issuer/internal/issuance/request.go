@@ -34,6 +34,7 @@ type Result struct {
 	TermsURL    string           `json:"termsURL,omitempty"`
 	Publication *Publication     `json:"publication,omitempty"`
 	Renewal     *RenewalMetadata `json:"renewal,omitempty"`
+	Local       *LocalMetadata   `json:"local,omitempty"`
 }
 
 func canonicalDNS(domain string) (string, error) {
@@ -93,8 +94,22 @@ func DecodeRequest(input io.Reader) (Request, error) {
 	}
 	typed := json.NewDecoder(bytes.NewReader(data))
 	typed.DisallowUnknownFields()
-	if typed.Decode(&result) != nil || result.Version != 1 || (result.Operation != "describe" && result.Operation != "issue" && result.Operation != "renewal-info") {
+	if typed.Decode(&result) != nil || result.Version != 1 || (result.Operation != "describe" && result.Operation != "issue" && result.Operation != "renewal-info" && !localOperation(result.Operation)) {
 		return Request{}, errors.New("Invalid issuer request schema")
+	}
+	if localOperation(result.Operation) {
+		for name := range fields {
+			if name != "version" && name != "operation" && name != "domain" && name != "stateDirectory" {
+				return Request{}, errors.New("Unexpected local certificate field")
+			}
+		}
+		if result.Domain, err = canonicalLocalHost(result.Domain); err != nil {
+			return Request{}, err
+		}
+		if !filepath.IsAbs(result.StateDirectory) || filepath.Clean(result.StateDirectory) != result.StateDirectory || strings.ContainsRune(result.StateDirectory, '\x00') {
+			return Request{}, errors.New("Absolute clean local state path required")
+		}
+		return result, nil
 	}
 	if err = validateHTTPS(result.Directory); err != nil {
 		return Request{}, err

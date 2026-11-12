@@ -19,6 +19,9 @@ int ConfigurationIo::sync(int fd) const {return fsync(fd);}
 int ConfigurationIo::replace(int directory,const char *temporary,const char *destination) const {
     return renameat(directory,temporary,directory,destination);
 }
+int ConfigurationIo::publishNew(int directory,const char *temporary,const char *destination) const {
+    return linkat(directory,temporary,directory,destination,0);
+}
 namespace {
 using json=nlohmann::json;
 struct Fd {
@@ -111,6 +114,27 @@ struct Temporary {
 void sync(const ConfigurationIo &io,int fd) {
     while(io.sync(fd))if(errno!=EINTR)error(ConfigurationProblem::Io,"Cannot confirm settings storage.");
 }
+void prepare_parent(const std::filesystem::path &path,const ConfigurationIo &io) {
+    std::filesystem::path current="/";
+    for(const auto &part:path.relative_path()) {
+        auto parent=current;current/=part;
+        bool created=mkdir(current.c_str(),0700)==0;
+        if(!created&&errno!=EEXIST)error(ConfigurationProblem::Io,"Cannot create the settings directory.");
+        struct stat named{},target{};
+        if(lstat(current.c_str(),&named)||stat(current.c_str(),&target)||!S_ISDIR(target.st_mode)||
+           (named.st_uid!=0&&named.st_uid!=geteuid())||
+           (target.st_uid!=0&&target.st_uid!=geteuid())||
+           ((target.st_mode&0022)&&!(target.st_mode&S_ISVTX)))
+            error(ConfigurationProblem::UnsafePath,"The settings directory path is unsafe.");
+        // Trusted ancestor aliases such as /home -> /var/home are permitted;
+        // the final application directory still uses directory() O_NOFOLLOW.
+        if(created) {
+            Fd ancestor(open(parent.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC));
+            if(ancestor.value<0)error(ConfigurationProblem::Io,"Cannot confirm the settings directory.");
+            sync(io,ancestor.value);
+        }
+    }
+}
 } // namespace
 ConfigurationStore::ConfigurationStore(std::filesystem::path location,std::shared_ptr<ConfigurationIo> operations)
     :path(std::move(location)),io(std::move(operations)) {
@@ -126,6 +150,60 @@ ConfigurationSnapshot ConfigurationStore::read() {
         error(ConfigurationProblem::Changed,"The settings directory changed. Reopen Settings.");
     reconcile_required=false;
     return value;
+}
+ConfigurationSave ConfigurationStore::create(const json &draft) {
+    std::lock_guard guard(mutex);
+    if(reconcile_required)return {SaveOutcome::Uncertain,ConfigurationProblem::ReconcileRequired,"Reopen Traverse to confirm the saved settings.",std::nullopt};
+    bool published=false;
+    try {
+        validate(draft,path.parent_path());
+        prepare_parent(path.parent_path(),*io);
+        auto parent=directory(path);
+        auto lock_name="."+path.filename().string()+".lock";
+        Fd lock(openat(parent.value,lock_name.c_str(),O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK,0600));
+        struct stat info{};
+        if(lock.value<0||fstat(lock.value,&info)||!S_ISREG(info.st_mode)||info.st_uid!=geteuid()||(info.st_mode&0077))
+            error(ConfigurationProblem::UnsafePath,"Cannot safely lock settings storage.");
+        if(flock(lock.value,LOCK_EX|LOCK_NB))error(ConfigurationProblem::Busy,"Another settings save is in progress.");
+        if(!fstatat(parent.value,path.filename().c_str(),&info,AT_SYMLINK_NOFOLLOW))
+            error(ConfigurationProblem::Changed,"Settings already exist. Reopen Traverse.");
+        if(errno!=ENOENT)error(ConfigurationProblem::Io,"Cannot inspect the settings destination.");
+        Temporary temporary(parent.value);
+        if(fchmod(temporary.fd.value,0600))error(ConfigurationProblem::Io,"Cannot protect saved settings.");
+        auto body=draft.dump(2)+"\n";size_t offset=0;
+        while(offset<body.size()) {
+            auto count=io->write(temporary.fd.value,body.data()+offset,body.size()-offset);
+            if(count>0)offset+=size_t(count);
+            else if(count<0&&errno==EINTR)continue;
+            else error(ConfigurationProblem::Io,"Cannot write the settings file.");
+        }
+        sync(*io,temporary.fd.value);
+        if(!temporary.owned()||!named_directory(parent.value,path.parent_path()))
+            error(ConfigurationProblem::Changed,"The settings directory changed before creation.");
+        if(io->publishNew(parent.value,temporary.name.c_str(),path.filename().c_str())) {
+            auto code=errno;
+            struct stat actual{};
+            published=!fstatat(parent.value,path.filename().c_str(),&actual,AT_SYMLINK_NOFOLLOW)&&
+                actual.st_dev==temporary.identity.st_dev&&actual.st_ino==temporary.identity.st_ino;
+            error(code==EEXIST?ConfigurationProblem::Changed:ConfigurationProblem::Io,
+                code==EEXIST?"Settings appeared during setup. Reopen Traverse.":"Cannot confirm the settings creation.");
+        }
+        published=true;
+        if(!temporary.owned()||unlinkat(parent.value,temporary.name.c_str(),0))
+            error(ConfigurationProblem::Io,"Cannot confirm settings storage.");
+        sync(*io,parent.value);
+        auto saved=traverse::read(parent.value,path.filename().c_str(),path.parent_path(),*io);
+        if(saved.bytes!=body||saved.device!=temporary.identity.st_dev||saved.inode!=temporary.identity.st_ino||
+           !named_directory(parent.value,path.parent_path()))
+            error(ConfigurationProblem::Changed,"Cannot confirm the created settings.");
+        return {SaveOutcome::Saved,ConfigurationProblem::None,{},std::move(saved)};
+    } catch(const ConfigurationFailure &failure) {
+        reconcile_required=published;
+        return {published?SaveOutcome::Uncertain:SaveOutcome::NotSaved,failure.problem,failure.what(),std::nullopt};
+    } catch(const std::exception &) {
+        reconcile_required=published;
+        return {published?SaveOutcome::Uncertain:SaveOutcome::NotSaved,ConfigurationProblem::Io,"Cannot confirm the created settings.",std::nullopt};
+    }
 }
 ConfigurationSave ConfigurationStore::save(const ConfigurationSnapshot &base,const json &draft) {
     std::lock_guard guard(mutex);

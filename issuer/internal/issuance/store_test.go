@@ -158,7 +158,15 @@ func TestUnsafeStateNeverFollowsLinksOrChangesPermissions(t *testing.T) {
 			case "lock-link":
 				os.Symlink(marker, filepath.Join(path, "issuer.lock"))
 			case "lock-mode":
-				os.WriteFile(filepath.Join(path, "issuer.lock"), nil, 0644)
+				lock := filepath.Join(path, "issuer.lock")
+				if err := os.WriteFile(lock, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				// Set the deliberately unsafe mode explicitly; a private caller
+				// umask must not silently turn this into the positive0600 case.
+				if err := os.Chmod(lock, 0644); err != nil {
+					t.Fatal(err)
+				}
 			case "key-link":
 				os.Symlink(marker, filepath.Join(path, "account-key.pem"))
 			}

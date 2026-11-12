@@ -54,6 +54,15 @@ func OpenStore(path, directory string) (_ *Store, failure error) {
 	if err := validateHTTPS(directory); err != nil {
 		return nil, err
 	}
+	return openOwnedStore(path, directory)
+}
+
+// Policy-specific callers validate authority identity before this common owned
+// filesystem boundary. Public OpenStore remains HTTPS-only.
+func openOwnedStore(path, directory string) (_ *Store, failure error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("Absolute clean state path required")
+	}
 	// Reject symlink ancestors. Root then pins the checked leaf across renames.
 	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
 		info, err := os.Lstat(parent)
@@ -324,12 +333,18 @@ func (s *Store) confirmDirectory(name string) error {
 // Publish validates before touching either managed generation. Both native
 // certificate/key arguments refer to bundle.pem, making replacement indivisible.
 func (s *Store) Publish(certPEM, keyPEM []byte, domain string, roots *x509.CertPool, now time.Time) (Publication, error) {
+	return s.publish(certPEM, keyPEM, domain, roots, now, func(leaf *x509.Certificate) bool {
+		return len(leaf.DNSNames) == 1 && leaf.DNSNames[0] == domain && len(leaf.IPAddresses)+len(leaf.EmailAddresses)+len(leaf.URIs) == 0
+	})
+}
+
+func (s *Store) publish(certPEM, keyPEM []byte, domain string, roots *x509.CertPool, now time.Time, matches func(*x509.Certificate) bool) (Publication, error) {
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return Publication{}, errors.New("Certificate does not match private key")
 	}
 	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil || len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != domain || len(leaf.IPAddresses)+len(leaf.EmailAddresses)+len(leaf.URIs) != 0 {
+	if err != nil || !matches(leaf) {
 		return Publication{}, errors.New("Issued certificate identity mismatch")
 	}
 	intermediates := x509.NewCertPool()

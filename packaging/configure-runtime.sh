@@ -13,6 +13,8 @@ env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 \
   GST_PLUGIN_PATH= GST_PLUGIN_PATH_1_0= \
   GST_PLUGIN_SCANNER="$prefix/libexec/gstreamer-1.0/gst-plugin-scanner" \
   GST_PLUGIN_SCANNER_1_0="$prefix/libexec/gstreamer-1.0/gst-plugin-scanner" \
+  PIPEWIRE_MODULE_DIR="$prefix/lib/pipewire-0.3" SPA_PLUGIN_DIR="$prefix/lib/spa-0.2" \
+  PIPEWIRE_CONFIG_DIR="$prefix/share/pipewire" PIPEWIRE_CONFIG_PREFIX= PIPEWIRE_CONFIG_NAME=client.conf \
   GST_REGISTRY="$registry" GST_REGISTRY_1_0="$registry" \
   "$prefix/libexec/traverse/traverse-runtime-check"
 test -s "$registry"

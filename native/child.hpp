@@ -153,6 +153,8 @@ class OwnedOperation {
     std::string request, response;
     size_t sent = 0;
     bool input_closed = false, output_closed = false, reaped = false;
+    std::optional<Clock::time_point> cancellation_started;
+    bool kill_sent = false;
     int outcome = -1;
 
   public:
@@ -215,7 +217,27 @@ class OwnedOperation {
     pid_t id() const {
         return pid;
     }
+    const std::string &accumulated_output() const noexcept {
+        return response;
+    }
+    // Opt-in cancellation for supervisors which must keep servicing local Stop.
+    // poll() owns reaping; destruction retains the existing blocking safety net.
+    void request_stop() noexcept {
+        if (pid > 0 && !cancellation_started) {
+            cancellation_started = Clock::now();
+            kill(pid, SIGTERM);
+            if (channel >= 0)
+                shutdown(channel, SHUT_WR);
+            input_closed = true;
+            request.clear();
+        }
+    }
     std::optional<Result> poll() {
+        if (pid > 0 && cancellation_started && !kill_sent &&
+            Clock::now() - *cancellation_started >= std::chrono::seconds(5)) {
+            kill(pid, SIGKILL);
+            kill_sent = true;
+        }
         if (!input_closed) {
             while (sent < request.size()) {
                 auto count =
@@ -252,6 +274,10 @@ class OwnedOperation {
                 continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
                 break;
+            if (cancellation_started && errno == ECONNRESET) {
+                output_closed = true;
+                break;
+            }
             throw std::runtime_error("Certificate operation channel failed");
         }
         if (!reaped) {

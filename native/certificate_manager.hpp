@@ -32,6 +32,8 @@ class CertificateManager {
     CertificateManager &operator=(const CertificateManager &) = delete;
     const std::string &bundle() const;
     const std::string &broker() const;
+    const std::string &trust_file() const;
+    nlohmann::json public_authority() const;
     TlsCertificateStatus application() const;
     void validation_route(bool available);
     void tick();

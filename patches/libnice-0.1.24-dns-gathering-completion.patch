@@ -1,0 +1,56 @@
+--- a/agent/agent.c
++++ b/agent/agent.c
+@@ -2378,6 +2378,7 @@
+   GSList *i, *j, *k, *l, *m;
+ 
+   if (agent->stun_resolving_list) {
++    dns_resolution_ongoing = TRUE;
+     nice_debug ("Agent %p: Gathering not done, resolving names", agent);
+   }
+ 
+@@ -2819,11 +2820,13 @@
+           stream_id, error->message);
+     }
+     g_clear_error (&error);
+-    goto done;
++    goto gathering_done;
+   }
+ 
+ 
+   stream = agent_find_stream (agent, stream_id);
++  if (stream == NULL)
++    goto gathering_done;
+ 
+   for (item = addresses; item; item = item->next) {
+     GInetAddress *addr = item->data;
+@@ -2885,12 +2888,12 @@
+     }
+   }
+ 
++ gathering_done:
+   if (agent->discovery_unsched_items)
+     discovery_schedule (agent);
+   else
+     agent_gathering_done (agent);
+ 
+- done:
+   agent_unlock_and_emit (agent);
+   g_list_free_full (addresses, g_object_unref);
+   g_object_unref (agent);
+@@ -3168,7 +3171,7 @@
+     }
+     g_clear_error (&error);
+     turn->resolution_failed = TRUE;
+-    goto done;
++    goto gathering_done;
+   }
+ 
+   for (item = addresses; item; item = item->next) {
+@@ -3235,6 +3238,7 @@
+     }
+   }
+ 
++ gathering_done:
+   if (agent->discovery_unsched_items)
+     discovery_schedule (agent);
+   else

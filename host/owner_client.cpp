@@ -48,6 +48,7 @@ OwnerClient::OwnerClient(QString runtime_prefix, QString configuration_path, QOb
     poll.setInterval(100);
 }
 OwnerClient::~OwnerClient() {
+    publicCAExported = {};
     closeChannel(); // Native EOF/parent guards retain independent cleanup.
     if (child > 1) waitpid(child, nullptr, WNOHANG);
 }
@@ -105,12 +106,14 @@ void OwnerClient::spawn(const QJsonObject &profile) {
     if (stopping) stop();
 }
 void OwnerClient::closeChannel() {
+    const bool export_pending = requests.values().contains("export-ca");
     readable.reset(); writable.reset();
     if (descriptor >= 0) ::close(descriptor);
     descriptor = -1;
     incoming.clear(); outgoing.clear(); sent = 0;
     status_pending = false;
     requests.clear();
+    if (export_pending && !stopping && publicCAExported) publicCAExported(false,{},{});
 }
 void OwnerClient::fail(const QString &message) {
     closeChannel();
@@ -177,6 +180,23 @@ void OwnerClient::receive() {
            !parsed.contains("schemaVersion") || !parsed["schemaVersion"].is_number_integer() || parsed["schemaVersion"]!=1) {
             fail("Invalid sharing status."); return;
         }
+        if(parsed.contains("publicCA")) {
+            const auto &ca=parsed.at("publicCA");
+            static const std::set<std::string> fields={"version","domain","pem","fingerprint","validFrom","validUntil"};
+            bool valid=ca.is_object()&&ca.size()==fields.size();
+            if(valid)for(auto entry=ca.begin();entry!=ca.end();++entry)valid=valid&&fields.count(entry.key());
+            valid=valid&&ca.contains("version")&&ca["version"].is_number_integer()&&ca["version"]==1&&
+                ca.contains("domain")&&ca["domain"].is_string()&&!ca["domain"].get<std::string>().empty()&&
+                ca.contains("pem")&&ca["pem"].is_string()&&ca.contains("fingerprint")&&ca["fingerprint"].is_string()&&
+                ca.contains("validFrom")&&ca["validFrom"].is_number_integer()&&ca["validFrom"]>=0&&
+                ca.contains("validUntil")&&ca["validUntil"].is_number_integer()&&ca["validUntil"]>ca["validFrom"]&&ca["validUntil"]<=253402300799LL;
+            if(valid) {
+                auto pem=ca["pem"].get<std::string>(),fingerprint=ca["fingerprint"].get<std::string>();
+                valid=pem.rfind("-----BEGIN CERTIFICATE-----",0)==0&&pem.find("PRIVATE KEY")==std::string::npos&&
+                    fingerprint.size()==64&&fingerprint.find_first_not_of("0123456789abcdef")==std::string::npos;
+            }
+            if(!valid) {fail("Invalid public certificate reply.");return;}
+        }
         accept(document.object());
         if (descriptor < 0) return;
     }
@@ -194,6 +214,12 @@ void OwnerClient::accept(const QJsonObject &message) {
     } else if(message.value("event").toString()!="state" || !message.value("state").isObject()) {
         fail("Invalid sharing event."); return;
     }
+    if((message.contains("publicCA")&&(action!="export-ca"||!message.value("ok").toBool())) ||
+       (action=="export-ca"&&message.value("ok").toBool()&&
+        (!message.value("publicCA").isObject()||!message.value("state").isObject()))) {
+        if(action=="export-ca"&&publicCAExported)publicCAExported(false,{},{});
+        fail("Unsolicited public certificate reply.");return;
+    }
     if (message.value("state").isObject()) {
         auto state = message.value("state").toObject();
         auto identity = state.value("instance").toString();
@@ -201,6 +227,7 @@ void OwnerClient::accept(const QJsonObject &message) {
         auto now = monotonicMs();
         if (state.value("supervisorPid").toInteger(-1) != child || identity.isEmpty() ||
             (!instance.isEmpty() && identity != instance)) {
+            if(action=="export-ca"&&publicCAExported)publicCAExported(false,{},{});
             fail("Sharing status identity did not match."); return;
         }
         instance=identity;
@@ -209,15 +236,22 @@ void OwnerClient::accept(const QJsonObject &message) {
             // controller. Hide stale presentation and request fresh state.
             last_state=0;
             if(action=="new-code" && codeRefreshed)codeRefreshed(false);
+            if(action=="check-connection" && connectionCheckRequested)connectionCheckRequested(false);
+            if(action=="export-ca" && publicCAExported)publicCAExported(false,{},{});
             if(stateChanged)stateChanged({});
             return;
         }
         last_state = observed;
         if(action=="new-code" && codeRefreshed)codeRefreshed(message.value("ok").toBool());
+        if(action=="check-connection" && connectionCheckRequested)connectionCheckRequested(message.value("ok").toBool());
+        if(action=="export-ca" && publicCAExported)publicCAExported(message.value("ok").toBool(),
+            message.value("ok").toBool()?message.value("publicCA").toObject():QJsonObject{},state);
         if (stateChanged) stateChanged(state);
     }
     if (message.contains("ok") && !message.value("state").isObject() && !stopping && !message.value("ok").toBool()) {
         if(action=="new-code" && codeRefreshed)codeRefreshed(false);
+        if(action=="check-connection" && connectionCheckRequested)connectionCheckRequested(false);
+        if(action=="export-ca" && publicCAExported)publicCAExported(false,{},{});
         if (stateChanged) stateChanged({});
     }
 }
@@ -245,6 +279,13 @@ void OwnerClient::tick() {
 }
 void OwnerClient::newCode() {
     if (!stopping) request("new-code");
+}
+void OwnerClient::checkConnection() {
+    if (!stopping) request("check-connection");
+}
+void OwnerClient::exportCA() {
+    if(!stopping&&descriptor>=0)request("export-ca");
+    else if(publicCAExported)publicCAExported(false,{},{});
 }
 void OwnerClient::stop() {
     stopping = true;

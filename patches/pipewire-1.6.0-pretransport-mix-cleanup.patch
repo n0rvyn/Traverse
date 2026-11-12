@@ -1,0 +1,20 @@
+--- a/src/modules/module-client-node/remote-node.c
++++ b/src/modules/module-client-node/remote-node.c
+@@ -972,12 +972,11 @@
+ {
+ 	struct mix *mix;
+ 
+-	if (d->have_transport) {
+-		spa_list_consume(mix, &d->mix[SPA_DIRECTION_INPUT], link)
+-			clear_mix(d, mix);
+-		spa_list_consume(mix, &d->mix[SPA_DIRECTION_OUTPUT], link)
+-			clear_mix(d, mix);
+-	}
++	/* Default port mixes exist before the server supplies transport. */
++	spa_list_consume(mix, &d->mix[SPA_DIRECTION_INPUT], link)
++		clear_mix(d, mix);
++	spa_list_consume(mix, &d->mix[SPA_DIRECTION_OUTPUT], link)
++		clear_mix(d, mix);
+ 	spa_list_consume(mix, &d->free_mix, link) {
+ 		spa_list_remove(&mix->link);
+ 		free(mix);

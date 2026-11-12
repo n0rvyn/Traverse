@@ -18,6 +18,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Fixture configuration missing");
         auto input = json::parse(line);
         auto endpoint = traverse::EndpointSettings::parse(input.at("endpoint"));
+        const bool local = endpoint.certificates.mode == traverse::CertificateMode::Local;
         auto data = input.at("dataHome").get<std::string>();
         auto broker = input.at("broker").get<std::string>();
         auto issuer = input.at("issuer").get<std::string>();
@@ -33,13 +34,17 @@ int main(int argc, char **argv) {
         config.turn_port = input.at("turnPort");
         config.certificate = config.private_key = manager->bundle();
         config.expected_host = endpoint.domain;
-        config.ca_file = endpoint.certificates.certificate_trust_file;
+        config.ca_file = manager->trust_file();
         config.ca_directory = std::string{};
-        config.acme_socket = broker;
-        config.challenge_only = !manager->application().available;
-        auto router = std::make_unique<traverse::TlsRouter>(config);
-        config.port = router->port();
-        manager->validation_route(true);
+        if (!local)
+            config.acme_socket = broker;
+        config.challenge_only = !local && !manager->application().available;
+        std::unique_ptr<traverse::TlsRouter> router;
+        if (!local) {
+            router = std::make_unique<traverse::TlsRouter>(config);
+            config.port = router->port();
+        }
+        manager->validation_route(!local);
         auto flags = fcntl(STDIN_FILENO, F_GETFL);
         if (flags < 0 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK))
             throw std::runtime_error("Fixture input unavailable");
@@ -60,12 +65,20 @@ int main(int argc, char **argv) {
                 commands.erase(0, newline + 1);
                 if (command == "stop")
                     stopping = true;
+                else if (command == "export-ca") {
+                    try {
+                        if(!manager)throw std::runtime_error("Local manager unavailable");
+                        std::cout << json{{"publicCA",manager->public_authority()}}.dump() << '\n' << std::flush;
+                    } catch(const std::exception &) {
+                        std::cout << json{{"publicCARejected",true}}.dump() << '\n' << std::flush;
+                    }
+                }
                 else if (command == "pause-manager")
                     manager.reset();
                 else if (command == "reload-schedule") {
                     manager.reset();
                     manager = create_manager();
-                    manager->validation_route(true);
+                    manager->validation_route(!local);
                     ++generation;
                 } else
                     throw std::runtime_error("Unknown fixture command");
@@ -84,20 +97,26 @@ int main(int argc, char **argv) {
                 continue;
             }
             manager->tick();
+            if (local && !router && manager->application().available) {
+                router = std::make_unique<traverse::TlsRouter>(config);
+                config.port = router->port();
+            }
             if (config.challenge_only && manager->application().available) {
                 router.reset();
                 config.challenge_only = false;
                 router = std::make_unique<traverse::TlsRouter>(config);
             }
-            router->refresh_certificate();
-            manager->frontend(router->certificate_status());
+            if (router) {
+                router->refresh_certificate();
+                manager->frontend(router->certificate_status());
+            }
             auto status = manager->status();
             status["managerGeneration"] = generation;
             status["managerPaused"] = false;
             status["proofOnly"] = config.challenge_only;
-            status["port"] = router->port();
-            status["frontendFingerprint"] = router->certificate_status().fingerprint;
-            status["frontendRevision"] = router->certificate_status().revision;
+            status["port"] = router ? router->port() : config.port;
+            status["frontendFingerprint"] = router ? router->certificate_status().fingerprint : "";
+            status["frontendRevision"] = router ? router->certificate_status().revision : 0;
             auto encoded = status.dump();
             if (encoded != previous) {
                 std::cout << encoded << '\n' << std::flush;
@@ -107,7 +126,8 @@ int main(int argc, char **argv) {
         }
         if (manager)
             manager->stop();
-        router->stop();
+        if (router)
+            router->stop();
         std::cout << json{{"stopped", true}}.dump() << '\n' << std::flush;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

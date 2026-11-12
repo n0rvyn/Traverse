@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace traverse {
-enum class HostAction { Status, NewCode, Stop };
+enum class HostAction { Status, NewCode, CheckConnection, ExportCA, Stop };
 struct HostCommand {
     std::uint64_t request_id;
     HostAction action;
@@ -57,7 +57,7 @@ class HostSupervisor {
     std::string instance;
     const char *stage_name = "configuration", *phase_name = "starting";
     bool stopping = false;
-    std::function<nlohmann::json()> provider, refresh;
+    std::function<nlohmann::json()> provider, refresh, check_connection, export_ca;
     nlohmann::json snapshot() const;
 
   public:
@@ -72,7 +72,9 @@ class HostSupervisor {
     const char *stage() const {
         return stage_name;
     }
-    void bind(std::function<nlohmann::json()> state, std::function<nlohmann::json()> new_code = {});
+    void bind(std::function<nlohmann::json()> state, std::function<nlohmann::json()> new_code = {},
+              std::function<nlohmann::json()> connection_check = {},
+              std::function<nlohmann::json()> public_ca = {});
     void unbind();
     void stage(const char *name, const char *phase = "starting");
     void failure();

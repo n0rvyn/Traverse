@@ -1,0 +1,93 @@
+--- a/gst/unixfd/gstunixfdsink.c
++++ b/gst/unixfd/gstunixfdsink.c
+@@ -48,6 +48,7 @@
+ #include <gst/allocators/allocators.h>
+ 
+ #include <glib/gstdio.h>
++#include <sys/stat.h>
+ #include <gio/gio.h>
+ #include <gio/gunixsocketaddress.h>
+ 
+@@ -80,6 +81,8 @@
+   gchar *socket_path;
+   GUnixSocketAddressType socket_type;
+   GSocket *socket;
++  gchar *bound_socket_path;
++  GStatBuf bound_socket_identity;
+   GSource *source;
+ 
+   /* GSocket -> Client */
+@@ -344,6 +347,27 @@
+   return NULL;
+ }
+ 
++/* Only retire the filesystem node created by this listener. A caller can
++ * rename/rebind the requested path while the stream is running. Keep the
++ * socket alive through this check so its inode cannot be reused. */
++static void
++clear_bound_socket_path (GstUnixFdSink * self)
++{
++  GStatBuf current;
++
++  if (self->bound_socket_path == NULL)
++    return;
++
++  if (g_lstat (self->bound_socket_path, &current) == 0 &&
++      S_ISSOCK (current.st_mode) &&
++      current.st_dev == self->bound_socket_identity.st_dev &&
++      current.st_ino == self->bound_socket_identity.st_ino &&
++      current.st_uid == self->bound_socket_identity.st_uid)
++    g_unlink (self->bound_socket_path);
++
++  g_clear_pointer (&self->bound_socket_path, g_free);
++}
++
+ static gboolean
+ gst_unix_fd_sink_start (GstBaseSink * bsink)
+ {
+@@ -370,9 +394,18 @@
+     goto out;
+   }
+ 
++  if (self->socket_type == G_UNIX_SOCKET_ADDRESS_PATH) {
++    if (g_lstat (self->socket_path, &self->bound_socket_identity) != 0 ||
++        !S_ISSOCK (self->bound_socket_identity.st_mode)) {
++      GST_ERROR_OBJECT (self, "Cannot identify bound UNIX socket path");
++      ret = FALSE;
++      goto out;
++    }
++    self->bound_socket_path = g_strdup (self->socket_path);
++  }
++
+   if (!g_socket_listen (self->socket, &error)) {
+     GST_ERROR_OBJECT (self, "Failed to listen socket: %s", error->message);
+-    g_clear_object (&self->socket);
+     ret = FALSE;
+     goto out;
+   }
+@@ -391,6 +424,10 @@
+       sizeof (MemoryPayload));
+ 
+ out:
++  if (!ret) {
++    clear_bound_socket_path (self);
++    g_clear_object (&self->socket);
++  }
+   GST_OBJECT_UNLOCK (self);
+   g_clear_error (&error);
+   g_clear_object (&addr);
+@@ -407,13 +444,11 @@
+ 
+   g_source_destroy (self->source);
+   g_clear_pointer (&self->source, g_source_unref);
++  clear_bound_socket_path (self);
+   g_clear_object (&self->socket);
+   gst_clear_caps (&self->caps);
+   g_hash_table_remove_all (self->clients);
+   g_clear_pointer (&self->payload, g_byte_array_unref);
+-
+-  if (self->socket_type == G_UNIX_SOCKET_ADDRESS_PATH)
+-    g_unlink (self->socket_path);
+ 
+   return TRUE;
+ }

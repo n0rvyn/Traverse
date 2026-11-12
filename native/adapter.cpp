@@ -13,9 +13,12 @@ extern char **environ;
 // An exclusive owner lock distinguishes a dead adapter's socket from a live one.
 class SocketOwner {
     int lock_fd = -1;
+    std::string socket_path;
+    struct stat bound_identity{};
+    bool bound = false;
 
   public:
-    explicit SocketOwner(const std::string &path) {
+    explicit SocketOwner(const std::string &path) : socket_path(path) {
         lock_fd = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (lock_fd < 0)
             throw std::runtime_error("Cannot open adapter owner lock");
@@ -26,8 +29,19 @@ class SocketOwner {
         }
     }
     ~SocketOwner() {
+        struct stat current{};
+        if (bound && !lstat(socket_path.c_str(), &current) && S_ISSOCK(current.st_mode) &&
+            current.st_uid == getuid() && current.st_dev == bound_identity.st_dev &&
+            current.st_ino == bound_identity.st_ino)
+            unlink(socket_path.c_str());
         if (lock_fd >= 0)
             close(lock_fd);
+    }
+    void remember_bound_socket() {
+        if (lstat(socket_path.c_str(), &bound_identity) ||
+            !S_ISSOCK(bound_identity.st_mode) || bound_identity.st_uid != getuid())
+            throw std::runtime_error("Cannot identify owned adapter socket");
+        bound = true;
     }
     static void clear_stale(const std::string &path) {
         struct stat info{};
@@ -223,7 +237,6 @@ class Adapter {
             std::cerr << e.what() << '\n';
         }
         stop_pipeline(pipeline);
-        std::filesystem::remove(frame_socket);
     }
     bool auth(const httplib::Request &r) {
         if (!armed || !paired || !equal_secret(token, bearer(r))) {
@@ -489,6 +502,7 @@ int main(int argc, char **argv) {
         server.set_address_family(AF_UNIX);
         if (!server.bind_to_port(socket_path, 80))
             throw std::runtime_error("Cannot bind adapter socket");
+        owner.remember_bound_socket();
         chmod(socket_path.c_str(), 0600);
         std::thread listener([&] { server.listen_after_bind(); });
         while (!stopping) {
@@ -497,7 +511,6 @@ int main(int argc, char **argv) {
         }
         server.stop();
         listener.join();
-        std::filesystem::remove(socket_path);
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "Adapter: " << e.what() << '\n';

@@ -16,6 +16,7 @@ def main():
     require_disposable_environment()
     driver=Path(os.environ['TRAVERSE_TEST_HOST_DRIVER'])
     pebble=Path(os.environ['TRAVERSE_TEST_PEBBLE'])
+    keyboard=os.environ.get('TRAVERSE_TEST_HOST_KEYBOARD')=='1'
     with tempfile.TemporaryDirectory(prefix='traverse-window-') as temporary:
         root=Path(temporary);root.chmod(0o755);ca=PrivateCA(root,pebble,443)
         try:
@@ -36,6 +37,25 @@ def main():
                     return json.loads(line)
                 def call(action,**values):
                     process.stdin.write(json.dumps(dict(action=action,**values))+'\n');process.stdin.flush();return read()
+                keyboard_controls=[]
+                def activate(control):
+                    if not keyboard:return call('click',control=control)
+                    expected={'copyUrl':'Copy remote URL','copyCode':'Copy pairing code',
+                        'newCode':'New code','stopSharing':'Stop sharing'}[control]
+                    row=call('focus');seen=set()
+                    while row['focusControl']!=control:
+                        identity=(row['focusControl'],row['focusClass'])
+                        assert identity not in seen,('Control missing from keyboard cycle',control,row)
+                        seen.add(identity)
+                        desktop.x11('press','Tab')
+                        wait(lambda:call('focus')['focusControl']!=identity[0],
+                            'External Tab did not change actual Qt focus')
+                        row=call('focus')
+                    assert row['focused'] and row['windowActive'] and row['accessibleButton'],row
+                    assert row['accessibleName']==expected,row
+                    desktop.x11('press','space')
+                    keyboard_controls.append(control)
+                    return {'clicked':True}
                 def clipboard(expected):
                     result=subprocess.run([str(driver),'--clipboard-probe'],input=json.dumps({'expected':expected})+'\n',
                         user=65534,group=65534,extra_groups=[],env=environment,text=True,capture_output=True,timeout=5)
@@ -45,16 +65,20 @@ def main():
                     wait(lambda:call('view')['codeAvailable'],'Actual Qt window did not obtain available authority',timeout=45)
                     wait(lambda:call('view')['status']=='Waiting for Chrome','Actual Qt window never verified local HTTPS',timeout=45)
                     assert desktop.http()[0]==200
+                    if keyboard:
+                        desktop.x11('focus','Traverse')
+                        wait(lambda:call('focus')['windowActive'] and call('focus')['focused'],
+                            'Owned Qt window did not receive X11 keyboard focus')
                     first=ipc(desktop.adapter,'/owner/authority')['code']
-                    assert call('click',control='copyUrl')['clicked'];clipboard(desktop.origin+'/')
-                    assert call('click',control='copyCode')['clicked'];clipboard(first)
+                    assert activate('copyUrl')['clicked'];clipboard(desktop.origin+'/')
+                    assert activate('copyCode')['clicked'];clipboard(first)
                     if ending=='stop' and os.environ.get('TRAVERSE_TEST_HOST_EXPIRY')=='1':
                         wait(lambda:ipc(desktop.adapter,'/owner/authority')['codeStatus']=='expired',
                             'Real existing five-minute lifetime did not expire',timeout=305)
                         wait(lambda:call('view')['codeExpired'],'Qt code expiry did not update')
                         expired=call('view');assert not expired['codeAvailable'] and expired['newCodeAvailable']
                         assert not call('click',control='copyCode')['clicked']
-                    assert call('click',control='newCode')['clicked']
+                    assert activate('newCode')['clicked']
                     def refreshed():
                         value=ipc(desktop.adapter,'/owner/authority')
                         code=value.get('code')
@@ -62,12 +86,12 @@ def main():
                     wait(refreshed,'Actual New code control did not refresh')
                     current=ipc(desktop.adapter,'/owner/authority')['code']
                     wait(lambda:call('view')['codeAvailable'],'Qt refreshed-code reply not observed')
-                    assert call('click',control='copyCode')['clicked'];clipboard(current)
+                    assert activate('copyCode')['clicked'];clipboard(current)
                     status,body=desktop.http('api/pair',{'code':current});assert status==200;token=json.loads(body)['token']
                     wait(lambda:call('view')['codeUsed'],'Qt window did not observe actual pairing without another button action')
                     view=call('view');assert not view['codeAvailable'] and not view['newCodeAvailable']
                     assert view['status']=='Waiting for Chrome to reconnect' and view['stopInsideWindow'] and view['stopOnScreen']
-                    assert call('click',control='copyUrl')['clicked'];clipboard(desktop.origin+'/')
+                    assert activate('copyUrl')['clicked'];clipboard(desktop.origin+'/')
                     assert call('snapshot')['saved']
                     if ending=='stop':
                         output=Path(os.environ['TRAVERSE_TEST_HOST_RESULT_IMAGE']);output.write_bytes((desktop.home/'window.png').read_bytes())
@@ -107,7 +131,7 @@ def main():
                         ipc(desktop.adapter,'/input',{'type':'heartbeat'},token)
                         assert desktop.x11('query')['shift']==1
                     before=time.monotonic()
-                    if ending=='stop':assert call('click',control='stopSharing')['clicked']
+                    if ending=='stop':assert activate('stopSharing')['clicked']
                     elif ending=='close':assert call('close')['closing']
                     else:process.kill()
                     wait(lambda:desktop.x11('query')['shift']==0,'Qt exit left held Shift',timeout=2)
@@ -121,6 +145,7 @@ def main():
                         'pairedWithoutRtcNeverConnected':True,'stopInsideWindow':True,'stopOnScreen':True,'separateSystemQtMediaRuntime':True,
                         'inputReleaseSeconds':released,'allOwnedChildrenStopped':True})
                     reports[-1]['guiSocketsNotInheritedAndPairingSecretsAbsentFromArgv']=True
+                    if keyboard:reports[-1]['keyboardAccessibleControls']=keyboard_controls
                     if ending=='stop':reports[-1]['staleGuiRetainsActualControllerAndHeldInput']=True
                     if ending=='stop' and os.environ.get('TRAVERSE_TEST_HOST_EXPIRY')=='1':
                         reports[-1]['actualFiveMinuteCodeExpiryAndRefresh']=True

@@ -151,6 +151,10 @@ std::vector<HostCommand> HostChannel::receive() {
             kind = HostAction::Status;
         else if (action == "new-code")
             kind = HostAction::NewCode;
+        else if (action == "check-connection")
+            kind = HostAction::CheckConnection;
+        else if (action == "export-ca")
+            kind = HostAction::ExportCA;
         else if (action == "stop")
             kind = HostAction::Stop;
         else {
@@ -181,14 +185,20 @@ nlohmann::json HostSupervisor::snapshot() const {
 }
 
 void HostSupervisor::bind(std::function<nlohmann::json()> state,
-                          std::function<nlohmann::json()> new_code) {
+                          std::function<nlohmann::json()> new_code,
+                          std::function<nlohmann::json()> connection_check,
+                          std::function<nlohmann::json()> public_ca) {
     provider = std::move(state);
     refresh = std::move(new_code);
+    check_connection = std::move(connection_check);
+    export_ca = std::move(public_ca);
 }
 
 void HostSupervisor::unbind() {
     provider = {};
     refresh = {};
+    check_connection = {};
+    export_ca = {};
 }
 
 void HostSupervisor::stage(const char *name, const char *phase) {
@@ -230,6 +240,10 @@ bool HostSupervisor::pump() {
                 } else {
                     response.update(refresh());
                 }
+            } else if(command.action == HostAction::CheckConnection) {
+                response.update(check_connection ? check_connection() : nlohmann::json{{"ok",false},{"error","not-ready"}});
+            } else if(command.action == HostAction::ExportCA) {
+                response.update(export_ca ? export_ca() : nlohmann::json{{"ok",false},{"error","not-ready"}});
             } else {
                 response["ok"] = true;
             }

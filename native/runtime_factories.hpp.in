@@ -1,0 +1,5 @@
+#pragma once
+// Generated from the canonical runtime manifest; packaged and native checks agree.
+namespace traverse {
+inline constexpr const char *required_runtime_factories[] = {@TRAVERSE_REQUIRED_FACTORIES@};
+}

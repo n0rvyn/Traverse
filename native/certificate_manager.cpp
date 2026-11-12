@@ -1,11 +1,15 @@
 #include "certificate_manager.hpp"
 #include "child.hpp"
+#include "local_authority.hpp"
 #include <cmath>
 #include <ctime>
 #include <iomanip>
 #include <limits>
+#include <openssl/pem.h>
 #include <set>
 #include <sys/file.h>
+#include <sys/inotify.h>
+#include <utility>
 
 namespace traverse {
 namespace {
@@ -281,21 +285,31 @@ CertificateSchedule CertificateSchedule::decode(const json &value) {
 struct CertificateManager::Impl {
     CertificateSettings settings;
     std::filesystem::path state, issuer;
-    std::string bundle_path, challenge;
+    std::string bundle_path, material_path, public_root_path, challenge;
     int lock = -1;
     CertificateSchedule schedule;
     TlsCertificateStatus cached;
     std::unique_ptr<OwnedOperation> operation;
     std::string operation_name, phase = "pending", reason;
+    json local_metadata;
+    json admitted_authority;
+    int authority_watch = -1;
+    bool authority_unchanged = false;
+    bool local_reconciled = false;
     bool route = false, halted = false, resume_required = false, recovery_needed = false,
          awaiting_admission = false;
 
     Impl(const CertificateSettings &config, const std::string &data_home,
          const std::filesystem::path &executable, const std::string &broker)
         : settings(config), state(config.managed_state_directory(data_home)), issuer(executable),
-          bundle_path((state / "bundle.pem").string()), challenge(broker) {
-        if (config.mode != CertificateMode::Automatic || !config.terms_agreed ||
-            !issuer.is_absolute() || !std::filesystem::path(challenge).is_absolute())
+          bundle_path((state / (config.mode == CertificateMode::Local ? "application.pem" : "bundle.pem")).string()),
+          material_path((state / "bundle.pem").string()),
+          public_root_path(config.mode == CertificateMode::Local ? (state / "local-ca.pem").string()
+                                                               : config.certificate_trust_file),
+          challenge(broker) {
+        if ((config.mode != CertificateMode::Local &&
+             (config.mode != CertificateMode::Automatic || !config.terms_agreed ||
+              !std::filesystem::path(challenge).is_absolute())) || !issuer.is_absolute())
             throw std::runtime_error("Consented owned certificate operation required");
         directories(state.parent_path());
         secure_directory(state.parent_path(), true);
@@ -308,11 +322,11 @@ struct CertificateManager::Impl {
             if (!created && !std::filesystem::is_empty(state))
                 throw std::runtime_error("Managed certificate CA identity missing");
             atomic_private(state / "directory.json",
-                           json{{"directory", settings.directory}}.dump());
+                           json{{"directory", settings.store_identity()}}.dump());
         } else {
             auto saved = json::parse(*identity);
             only(saved, {"directory"});
-            if (saved.at("directory") != settings.directory)
+            if (saved.at("directory") != settings.store_identity())
                 throw std::runtime_error("Managed certificate CA identity mismatch");
         }
         lock =
@@ -340,7 +354,7 @@ struct CertificateManager::Impl {
             if (auto saved = read_private(state / "schedule.json")) {
                 auto record = json::parse(*saved);
                 only(record, {"directory", "domain", "termsURL", "schedule"});
-                if (record.at("directory") != settings.directory ||
+                if (record.at("directory") != settings.store_identity() ||
                     record.at("domain") != settings.domain)
                     throw std::runtime_error("Certificate schedule identity mismatch");
                 schedule = CertificateSchedule::decode(record.at("schedule"));
@@ -348,6 +362,13 @@ struct CertificateManager::Impl {
                     schedule.consent_blocked = false;
                     schedule.check_at = current_time();
                 }
+            }
+            // Local candidates, including a valid saved leaf, cannot be
+            // admitted until the helper reconciles the authority and durable
+            // publication. Do not write a schedule before first initialization.
+            if (settings.mode == CertificateMode::Local) {
+                schedule.check_at = current_time();
+                return;
             }
             cached = load_application();
             if (cached.available) {
@@ -386,11 +407,13 @@ struct CertificateManager::Impl {
     }
     ~Impl() {
         stop();
+        if (authority_watch >= 0)
+            close(authority_watch);
         if (lock >= 0)
             close(lock);
     }
     void save() {
-        atomic_private(state / "schedule.json", json{{"directory", settings.directory},
+        atomic_private(state / "schedule.json", json{{"directory", settings.store_identity()},
                                                      {"domain", settings.domain},
                                                      {"termsURL", settings.terms_url},
                                                      {"schedule", schedule.encode()}}
@@ -402,10 +425,10 @@ struct CertificateManager::Impl {
         if (!read_private(state / "bundle.pem"))
             return {};
         try {
-            TlsCertificateConfig config{bundle_path,  bundle_path,  settings.domain,
+            TlsCertificateConfig config{material_path, material_path, settings.domain,
                                         std::nullopt, std::nullopt, false};
-            if (!settings.certificate_trust_file.empty()) {
-                config.ca_file = settings.certificate_trust_file;
+            if (!public_root_path.empty()) {
+                config.ca_file = public_root_path;
                 config.ca_directory = std::string{};
             }
             TlsCertificates certificates(config, [](SSL_CTX *) {});
@@ -416,7 +439,7 @@ struct CertificateManager::Impl {
     }
     void confirm_bundle() {
         read_private(state / "bundle.pem");
-        Descriptor material(open(bundle_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+        Descriptor material(open(material_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
         Descriptor directory(open(state.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
         if (material.fd < 0 || directory.fd < 0 || fsync(material.fd) || fsync(directory.fd))
             throw std::runtime_error("Managed certificate publication durability uncertain");
@@ -443,6 +466,9 @@ struct CertificateManager::Impl {
                         {"termsAgreed", settings.terms_agreed},
                         {"apiTrustFile", settings.api_trust_file},
                         {"certificateTrustFile", settings.certificate_trust_file}};
+        if (settings.mode == CertificateMode::Local)
+            request = {{"version", 1}, {"operation", name}, {"domain", settings.domain},
+                       {"stateDirectory", state.string()}};
         operation_name = name;
         try {
             operation = std::make_unique<OwnedOperation>(issuer, request.dump());
@@ -482,6 +508,14 @@ struct CertificateManager::Impl {
         reason = exposed.count(code) ? code : "certificate_operation_failed";
         phase = "failed";
         schedule.check_at = now + metadata_interval;
+        if (settings.mode == CertificateMode::Local) {
+            // Preserve an already admitted generation through renewal failure.
+            // Failed bootstrap must leave no new schedule that impersonates an
+            // initialized authority on the next launch.
+            if (local_reconciled)
+                save();
+            return;
+        }
         if (code == "ca_terms_changed" || code == "consent_required")
             schedule.consent_blocked = true;
         if (operation_name == "issue") {
@@ -510,8 +544,132 @@ struct CertificateManager::Impl {
         }
         save();
     }
+    void completed_local(const json &output, int exit_status, double now) {
+        only(output, {"version", "status", "code", "reason", "publication", "local"});
+        if (integer(output, "version") != 1)
+            throw std::runtime_error("Invalid local issuer result version");
+        const auto status = output.at("status").get<std::string>();
+        if (status == "failed") {
+            if (exit_status != 1 || output.contains("local") || output.contains("publication"))
+                throw std::runtime_error("Invalid local issuer failure");
+            failure(output.at("code").get<std::string>(), now);
+            return;
+        }
+        if (status == "published_durability_uncertain") {
+            if (exit_status != 2 || output.at("code") != "local_publication_uncertain" ||
+                output.contains("local"))
+                throw std::runtime_error("Invalid local uncertain result");
+            const auto &publication = output.at("publication");
+            only(publication, {"committed", "durable"});
+            if (!publication.at("committed").get<bool>() || publication.at("durable").get<bool>())
+                throw std::runtime_error("Invalid local uncertain publication");
+            // The next owned ensure reconciles the committed material. Never
+            // copy unconfirmed bytes into the frontend's admitted generation.
+            failure("recovery_state_uncertain", now);
+            return;
+        }
+        if (exit_status != 0 || (status != "local-issued" && status != "local-ready") ||
+            operation_name != "local-ensure" || output.contains("code") || output.contains("reason"))
+            throw std::runtime_error("Invalid local issuer success");
+        if (status == "local-issued") {
+            const auto &publication = output.at("publication");
+            only(publication, {"committed", "durable"});
+            if (!publication.at("committed").get<bool>() || !publication.at("durable").get<bool>())
+                throw std::runtime_error("Local publication not durable");
+        } else if (output.contains("publication")) {
+            throw std::runtime_error("Unexpected local publication metadata");
+        }
+        const auto &metadata = output.at("local");
+        only(metadata, {"authority", "material", "root", "leaf"});
+        if (metadata.at("authority") != "current" || metadata.at("material") != "current")
+            throw std::runtime_error("Local authority and material must be current");
+        const auto &root = metadata.at("root"), &leaf = metadata.at("leaf");
+        only(root, {"fingerprint", "validFrom", "validUntil"});
+        only(leaf, {"fingerprint", "validFrom", "validUntil", "renewAt"});
+        const auto root_from = integer(root, "validFrom"), root_until = integer(root, "validUntil");
+        dates(root_from, root_until);
+        if (now < root_from || now >= root_until ||
+            !fingerprint_valid(root.at("fingerprint").get<std::string>()))
+            throw std::runtime_error("Invalid local root metadata");
+        auto public_pem = read_private(public_root_path);
+        if (!public_pem || public_pem->size() > static_cast<size_t>(INT_MAX))
+            throw std::runtime_error("Local public root unavailable");
+        auto public_document = checked_local_authority(*public_pem, root, settings.domain);
+        if (!local_metadata.is_null() && local_metadata.at("root") != root)
+            throw std::runtime_error("Local renewal changed the admitted authority");
+        // Export copies only an admitted public certificate. Watching its
+        // inode keeps the owner request path free of filesystem reads and
+        // invalidates a changed/replaced export without accepting new bytes.
+        Descriptor watch(inotify_init1(IN_NONBLOCK | IN_CLOEXEC));
+        if (watch.fd < 0 ||
+            inotify_add_watch(watch.fd, public_root_path.c_str(),
+                              IN_MODIFY | IN_ATTRIB | IN_MOVE_SELF | IN_DELETE_SELF |
+                                  IN_CLOSE_WRITE | IN_DONT_FOLLOW) < 0)
+            throw std::runtime_error("Cannot observe local public authority");
+        auto confirmed_public = read_private(public_root_path);
+        char event[4096];
+        auto observed = read(watch.fd, event, sizeof(event));
+        if (!confirmed_public || *confirmed_public != *public_pem || observed >= 0 ||
+            (errno != EAGAIN && errno != EWOULDBLOCK))
+            throw std::runtime_error("Local public authority changed during admission");
+        auto replacement = load_application();
+        const auto renew_at = integer(leaf, "renewAt");
+        if (!replacement.available || leaf.at("fingerprint") != replacement.fingerprint ||
+            integer(leaf, "validFrom") != replacement.valid_from ||
+            integer(leaf, "validUntil") != replacement.valid_until ||
+            replacement.valid_from < root_from || replacement.valid_until > root_until ||
+            renew_at != std::min(replacement.valid_from + 60LL * 24 * 60 * 60,
+                                 static_cast<long long>(replacement.valid_until)))
+            throw std::runtime_error("Local material metadata differs from checked chain");
+        confirm_bundle();
+        // Keep the helper's candidate separate from the file watched by the
+        // frontend. A failed/uncertain helper cannot publish a new admission.
+        const auto material = read_private(material_path);
+        if (!material)
+            throw std::runtime_error("Checked local material missing");
+        atomic_private(bundle_path, *material);
+        cached = replacement;
+        local_metadata = metadata;
+        admitted_authority = std::move(public_document);
+        if (authority_watch >= 0)
+            close(authority_watch);
+        authority_watch = std::exchange(watch.fd, -1);
+        authority_unchanged = true;
+        local_reconciled = true;
+        schedule.material(cached, now);
+        schedule.renew_at = renew_at;
+        schedule.check_at = renew_at;
+        schedule.issuing = false;
+        schedule.uncertain = true;
+        schedule.admission_pending = true;
+        awaiting_admission = true;
+        phase = "awaiting_admission";
+        reason.clear();
+        save();
+    }
+    bool authority_current() {
+        if (settings.mode != CertificateMode::Local || halted || !local_reconciled ||
+            !authority_unchanged || authority_watch < 0 || phase != "ready" ||
+            !application().available)
+            return false;
+        char event[4096];
+        auto count = read(authority_watch, event, sizeof(event));
+        if (count < 0 && errno == EINTR)
+            return false;
+        if (count >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            authority_unchanged = false;
+            return false;
+        }
+        const auto now = current_time();
+        const auto &root = local_metadata.at("root");
+        return now >= integer(root, "validFrom") && now < integer(root, "validUntil");
+    }
     void completed(const OwnedOperation::Result &result, double now) {
         auto output = json::parse(result.output);
+        if (settings.mode == CertificateMode::Local) {
+            completed_local(output, result.exit_status, now);
+            return;
+        }
         only(output, {"version", "status", "code", "reason", "caProblem", "termsURL", "publication",
                       "renewal"});
         if (integer(output, "version") != 1 || !output.at("status").is_string())
@@ -632,6 +790,11 @@ struct CertificateManager::Impl {
             }
             return;
         }
+        if (settings.mode == CertificateMode::Local) {
+            if (!awaiting_admission && now >= schedule.check_at)
+                begin("local-ensure");
+            return;
+        }
         if (!route) {
             phase = "validation_unavailable";
             reason = "validation_route_unavailable";
@@ -664,6 +827,9 @@ struct CertificateManager::Impl {
     }
     void frontend(const TlsCertificateStatus &actual) {
         if (!actual.available)
+            return;
+        if (settings.mode == CertificateMode::Local &&
+            (!local_reconciled || actual.fingerprint != cached.fingerprint))
             return;
         if (actual.fingerprint != cached.fingerprint) {
             auto replacement = load_application();
@@ -702,10 +868,20 @@ const std::string &CertificateManager::bundle() const {
 const std::string &CertificateManager::broker() const {
     return impl->challenge;
 }
+const std::string &CertificateManager::trust_file() const {
+    return impl->public_root_path;
+}
+json CertificateManager::public_authority() const {
+    if (!impl->authority_current())
+        throw std::runtime_error("Local public authority is unavailable");
+    return impl->admitted_authority;
+}
 TlsCertificateStatus CertificateManager::application() const {
     return impl->application();
 }
 void CertificateManager::validation_route(bool available) {
+    if (impl->settings.mode == CertificateMode::Local)
+        return;
     impl->route = available;
     if (available && impl->phase == "validation_unavailable") {
         impl->phase = impl->application().available ? "ready" : "pending";
@@ -727,7 +903,7 @@ void CertificateManager::frontend(const TlsCertificateStatus &status) {
 }
 json CertificateManager::status() const {
     auto certificate = impl->application();
-    return {{"phase", impl->phase},
+    json result = {{"phase", impl->phase},
             {"reason", impl->reason},
             {"available", certificate.available},
             {"fingerprint", certificate.fingerprint},
@@ -735,6 +911,14 @@ json CertificateManager::status() const {
             {"checkAt", impl->schedule.check_at},
             {"operationActive", bool(impl->operation)},
             {"publicationUncertain", impl->schedule.uncertain}};
+    if (impl->settings.mode == CertificateMode::Local) {
+        result["localAuthority"] = {{"available", impl->authority_current()}};
+        if (result["localAuthority"]["available"] == true) {
+            result["localAuthority"].update(impl->local_metadata.at("root"));
+            result["localAuthority"]["domain"] = impl->settings.domain;
+        }
+    }
+    return result;
 }
 void CertificateManager::stop() {
     impl->stop();

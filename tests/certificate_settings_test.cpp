@@ -129,6 +129,54 @@ int main() {
         auto unknown = automatic;
         unknown["certificateSettings"]["unknown"] = true;
         rejects([&] { EndpointSettings::parse(unknown); });
+        auto local = automatic;
+        local["certificateSettings"] = {{"mode", "local"}};
+        auto local_settings = EndpointSettings::parse(local).certificates;
+        require(local_settings.mode == CertificateMode::Local && !local_settings.terms_agreed &&
+                    local_settings.directory.empty() &&
+                    local_settings.store_identity() == "local-hostname:v1:desktop.example.test",
+                "Local provider identity mixed with public CA");
+        const auto local_state = local_settings.managed_state_directory("/home/owner/.local/share");
+        require(local_state != state, "Local root collided with online state");
+        auto changed_port = local;
+        changed_port["port"] = 9443;
+        require(EndpointSettings::parse(changed_port).certificates.managed_state_directory(
+                    "/home/owner/.local/share") == local_state,
+                "Port change replaced the local authority");
+        auto changed_host = local;
+        changed_host["domain"] = "other.example.test";
+        require(EndpointSettings::parse(changed_host).certificates.managed_state_directory(
+                    "/home/owner/.local/share") != local_state,
+                "Hostname change retained old authority identity");
+        for (const auto &domain : {"127.0.0.1", "::1", "[2001:db8::1]", "::ffff:192.0.2.1"}) {
+            auto next = local;
+            next["domain"] = domain;
+            require(EndpointSettings::parse(next).certificates.mode == CertificateMode::Local,
+                    "Local IP settings rejected");
+        }
+        auto mapped = local;
+        mapped["domain"] = "[::ffff:192.0.2.1]";
+        auto normalized = EndpointSettings::parse(mapped);
+        require(normalized.domain == "192.0.2.1" && normalized.certificates.domain == normalized.domain &&
+                    normalized.public_url() == "https://192.0.2.1/" &&
+                    normalized.turns_url() == "turns:192.0.2.1:443?transport=tcp",
+                "Mapped local address did not normalize across URL/TURN/certificate consumers");
+        auto plain_ip = local;
+        plain_ip["domain"] = "192.0.2.1";
+        require(normalized.certificates.managed_state_directory("/home/owner/.local/share") ==
+                    EndpointSettings::parse(plain_ip).certificates.managed_state_directory("/home/owner/.local/share"),
+                "Mapped and plain IPv4 local identities differ");
+        for (const auto &field : {"directory", "termsURL", "termsAgreed", "apiTrustFile",
+                                 "certificateTrustFile", "rootYears", "clock"}) {
+            auto bad = local;
+            bad["certificateSettings"][field] = nullptr;
+            rejects([&] { EndpointSettings::parse(bad); });
+        }
+        for (const auto &field : {"certificate", "privateKey"}) {
+            auto bad = local;
+            bad[field] = "";
+            rejects([&] { EndpointSettings::parse(bad); });
+        }
         json supplied = {{"schemaVersion", 1},
                          {"domain", "127.0.0.1"},
                          {"certificate", "certificate.pem"},
@@ -142,6 +190,9 @@ int main() {
             EndpointSettings::parse(supplied, "", "/home/owner/config").certificates.certificate ==
                 original.certificates.certificate,
             "Explicit supplied mode changes existing material");
+        supplied["domain"] = "::ffff:192.0.2.1";
+        require(EndpointSettings::parse(supplied, "", "/home/owner/config").domain == "::ffff:192.0.2.1",
+                "Local normalization changed supplied-certificate identity");
         rejects([&] { original.certificates.managed_state_directory("/home/owner/data"); });
         for (const auto &path : {"relative", "/home/owner/../data"})
             rejects([&] { settings.managed_state_directory(path); });

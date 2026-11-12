@@ -43,8 +43,12 @@ class OwnerClient : public QObject {
     std::function<void(const QString &)> failed;
     std::function<void(int)> stopped;
     std::function<void(bool)> codeRefreshed;
+    std::function<void(bool)> connectionCheckRequested;
+    std::function<void(bool,const QJsonObject &,const QJsonObject &)> publicCAExported;
     void start();
     void stop();
     void newCode();
+    void checkConnection();
+    void exportCA();
 };
 } // namespace traverse

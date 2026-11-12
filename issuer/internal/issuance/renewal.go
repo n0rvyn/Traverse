@@ -43,6 +43,13 @@ func readOnlyStore(path, directory string) (_ *Store, failure error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || validateHTTPS(directory) != nil {
 		return nil, errors.New("Invalid managed state identity")
 	}
+	return readOnlyOwnedStore(path, directory)
+}
+
+func readOnlyOwnedStore(path, directory string) (_ *Store, failure error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("Invalid managed state identity")
+	}
 	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
 		info, err := os.Lstat(parent)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||

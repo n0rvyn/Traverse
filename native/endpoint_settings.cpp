@@ -161,7 +161,9 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
         if (!config["schemaVersion"].is_number_integer() || config["schemaVersion"] != 1)
             throw std::runtime_error("Unsupported schemaVersion");
         fields(config, {"schemaVersion", "domain", "port", "basePath", "certificate", "privateKey",
-                        "display", "listenAddress", "certificateSettings"});
+                        "display", "listenAddress", "certificateSettings", "observerSettings"});
+        if(config.contains("observerSettings"))
+            settings.observer=ObserverSettings::parse(config.at("observerSettings"),configuration_directory);
         settings.domain = normalize_host(text(config, "domain"));
         settings.port = port_value(config, "port", 443);
         if (chrome_restricted(settings.port))
@@ -174,6 +176,11 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
     settings.certificates =
         CertificateSettings::parse(config, settings.mode == EndpointMode::Standalone,
                                    settings.domain, configuration_directory);
+    if (settings.certificates.mode == CertificateMode::Local) {
+        settings.domain = settings.certificates.domain;
+        settings.origin = "https://" + uri_host(settings.domain) +
+                          (settings.port == 443 ? "" : ":" + std::to_string(settings.port));
+    }
     settings.display = text(config, "display", default_display);
     settings.listen_address = text(config, "listenAddress", "0.0.0.0");
     if (settings.mode == EndpointMode::Standalone) {

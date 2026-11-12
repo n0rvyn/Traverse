@@ -1,0 +1,14 @@
+--- a/src/util-sources.c
++++ b/src/util-sources.c
+@@ -93,7 +93,10 @@ source_destroy(struct source *source)
+ 	/* We expect source_remove() to be called before we ever get here */
+ 	assert(!source->is_active);
+ 
+-	if (source->close_behavior == SOURCE_CLOSE_FD_ON_DESTROY)
++	/* Registration can fail before source_remove() becomes applicable.
++	 * Removed sources already have fd == -1; borrowed sources must remain
++	 * untouched in both cases. */
++	if (source->close_behavior != SOURCE_CLOSE_FD_NEVER)
+ 		source->fd = xclose(source->fd);
+ }
+ 

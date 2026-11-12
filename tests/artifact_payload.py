@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -30,13 +31,16 @@ def record(stream, size, name, records, manifests):
 
 
 def from_tar(stream, prefix):
-    records, manifests = {}, []
+    records, manifests, links = {}, [], {}
     with tarfile.open(fileobj=stream, mode='r|*') as archive:
         for entry in archive:
             name = entry.name.removeprefix('./')
             if name.startswith(prefix) and entry.isfile():
                 record(archive.extractfile(entry), entry.size, name[len(prefix):], records, manifests)
-    return records, manifests
+            if name=='usr/bin/traverse-host':
+                if name in links:raise ValueError('Duplicate native host package entry')
+                links[name]=entry.linkname if entry.issym() else None
+    return records, manifests, links
 
 
 def exact(stream, size):
@@ -47,7 +51,7 @@ def exact(stream, size):
 
 
 def from_cpio(stream):
-    records, manifests = {}, []
+    records, manifests, links = {}, [], {}
     while True:
         header = exact(stream, 110)
         if header[:6] not in (b'070701', b'070702'):
@@ -62,7 +66,10 @@ def from_cpio(stream):
         if name == 'TRAILER!!!':
             break
         prefix = 'opt/traverse/'
-        if name.startswith(prefix) and stat.S_ISREG(mode):
+        if name=='usr/bin/traverse-host':
+            if name in links:raise ValueError('Duplicate native host package entry')
+            value=exact(stream,size);links[name]=value.decode() if stat.S_ISLNK(mode) else None
+        elif name.startswith(prefix) and stat.S_ISREG(mode):
             record(stream, size, name[len(prefix):], records, manifests)
         else:
             # Still consume non-payload entries without extracting anything.
@@ -73,7 +80,7 @@ def from_cpio(stream):
     # rpm2cpio can pad the stream after the trailer. Drain it before waiting.
     while stream.read(1024*1024):
         pass
-    return records, manifests
+    return records, manifests, links
 
 
 def verify(path):
@@ -85,11 +92,11 @@ def verify(path):
         reader = lambda stream: from_tar(stream, 'opt/traverse/')
     else:
         with path.open('rb') as stream:
-            records, manifests = from_tar(stream, 'traverse/')
+            records, manifests, links = from_tar(stream, 'traverse/')
         process = None
     if process is not None:
         try:
-            records, manifests = reader(process.stdout)
+            records, manifests, links = reader(process.stdout)
             if process.wait(timeout=30) != 0:
                 raise ValueError('Artifact reader failed')
         finally:
@@ -99,11 +106,33 @@ def verify(path):
     if len(manifests) != 1:
         raise ValueError('Artifact manifest absent or duplicated')
     manifest = manifests[0]
+    if 'sourceSnapshot' in manifest:
+        source=manifest['sourceSnapshot']
+        digest=hashlib.sha256(json.dumps(source['files'],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if source['kind'] not in ('private-source-snapshot','verified-git-checkout') or source['gitBasis']!=manifest['sourceCommit'] or source['sha256']!=digest:
+            raise ValueError('Artifact source snapshot identity is inconsistent')
     expected = manifest['payloadSha256']
     if set(records) != set(expected) | {MANIFEST} or any(records.get(name) != digest for name, digest in expected.items()):
         raise ValueError('Artifact bytes differ from payload inventory: '+path.name)
     if records['libexec/traverse/traverse-issuer'] != manifest['certificateIssuer']['build']['binarySha256']:
         raise ValueError('Packaged issuer differs from verified build')
+    if 'hostUi' in manifest:
+        ui=manifest['hostUi']
+        if ui['executable']!='libexec/traverse/traverse-host' or ui['entry']!='bin/traverse-host' or \
+                records.get(ui['executable'])!=ui['build']['binarySha256'] or ui['entry'] not in records:
+            raise ValueError('Packaged native host differs from checked system UI build')
+        if any(Path(name).name.startswith(('libQt5','libQt6')) for name in records):
+            raise ValueError('Distribution Qt must not enter the private media payload')
+        if path.suffix in ('.deb','.rpm') and links.get('usr/bin/traverse-host') not in ('/opt/traverse/bin/traverse-host','../../opt/traverse/bin/traverse-host'):
+            raise ValueError('Native host package entry is absent or points elsewhere')
+        if path.suffix=='.deb':
+            actual=subprocess.check_output(['dpkg-deb','-f',str(path),'Depends'],text=True)
+            required=re.split(r',\s*',ui['build']['debianDepends'])+ui['platformPackages']['deb']
+            if any(value.strip() not in actual for value in required):raise ValueError('DEB omits system UI dependencies')
+        elif path.suffix=='.rpm':
+            actual=set(subprocess.check_output(['rpm','-qp','--requires',str(path)],text=True).splitlines())
+            if not set(ui['build']['rpmRequires']+ui['platformPackages']['rpm']).issubset(actual):
+                raise ValueError('RPM omits system UI dependencies')
     return {'artifact': path.name, 'verifiedPayloadFiles': len(expected), 'sourceCommit': manifest['sourceCommit']}
 
 

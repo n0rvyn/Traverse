@@ -125,6 +125,8 @@ int main() {
             CertificateManager manager(config, root.string(), root / "absent-issuer",
                                        (root / "broker.sock").string());
             require(!manager.application().available, "Empty state fabricated current material");
+            rejects([&] { manager.public_authority(); });
+            require(!manager.status().contains("localAuthority"), "Automatic state advertised local CA export");
             for (int i = 0; i < 3; ++i)
                 manager.tick();
             require(manager.status().at("phase") == "validation_unavailable" &&

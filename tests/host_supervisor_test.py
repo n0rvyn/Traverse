@@ -54,7 +54,7 @@ def broker(config_path,root_parent):
     backend=subprocess.Popen([str(PREFIX/'libexec/traverse/traverse-launcher'),
         '--config',config_path,'--owner-fd',str(child.fileno()),'--supervisor-pid',str(os.getpid())],
         pass_fds=(child.fileno(),),env=env,stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL,stderr=Path(config_path).with_name('native-fixture-stderr.txt').open('w'))
     inherited=child.fileno();child.close();incoming=bytearray();serial=0;token=None;last_state={};known_code=None
     config=json.loads(Path(config_path).read_text());port=config.get('port',443)
     base=config.get('basePath','/');origin='https://'+DOMAIN+('' if port==443 else ':'+str(port))
@@ -88,18 +88,30 @@ def broker(config_path,root_parent):
         return {'ok':value.get('ok'), 'error':value.get('error'),
             'phase':state.get('phase'),'stage':state.get('stage'),
             'supervisorPid':state.get('supervisorPid'),'instance':state.get('instance'),
-            'localHttps':state.get('localHttps'),
+            'localHttps':state.get('localHttps'),'urlCheck':state.get('urlCheck'),'certificate':state.get('certificate'),
+            'configuredUrl':state.get('configuredUrl'),
             'authority':{key:authority[key] for key in ('codeStatus','armed','paired') if key in authority},
             'peer':state.get('peer'),'issuer':state.get('issuer')}
     print(json.dumps({'brokerReady':True,'launcherPid':backend.pid,'ownerFd':inherited}),flush=True)
     try:
         for line in sys.stdin:
             action=json.loads(line)['action']
-            if action in ('status','new-code'):
+            if action in ('status','new-code','check-connection'):
                 result=safe(request(action))
+            elif action=='export-ca':
+                value=request(action);result=safe(value)
+                if value.get('ok'):
+                    public=value['publicCA']
+                    assert set(public)=={'version','domain','pem','fingerprint','validFrom','validUntil'}
+                    assert 'PRIVATE KEY' not in public['pem']
+                    result['publicCA']=public
             elif action=='pair':
                 value=request('status');code=value['state']['authority']['code']
                 known_code=code
+                if config.get('certificateSettings',{}).get('mode')=='local':
+                    roots=list(Path(env['XDG_DATA_HOME']).glob('traverse/certificates/*/local-ca.pem'))
+                    assert len(roots)==1,'Fresh local fixture authority is not unique'
+                    context=ssl.create_default_context(cafile=str(roots[0]))
                 connection=http.client.HTTPSConnection(DOMAIN,port,context=context,timeout=5)
                 connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=5),server_hostname=DOMAIN)
                 try:
@@ -156,9 +168,11 @@ def broker(config_path,root_parent):
 
 class OwnerFixture:
     def __init__(self,desktop):
+        diagnostic=open(desktop.broker_stderr,'w') if hasattr(desktop,'broker_stderr') else None
         self.process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--broker',str(desktop.path),str(os.getpid())],
             user=65534,group=65534,extra_groups=[],env=desktop.env,cwd=desktop.home,
-            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1)
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=diagnostic or subprocess.DEVNULL,text=True,bufsize=1)
+        if diagnostic:diagnostic.close()
         try:
             self.ready=self.read();assert self.ready.get('brokerReady'),self.ready
         except BaseException:
@@ -214,7 +228,14 @@ def main():
                     value=owner.call('status')
                     assert value.get('phase')!='failed',('Synthetic backend failed stage',value.get('stage'))
                     return value if value.get('phase')=='ready' and value.get('localHttps',{}).get('status')=='passed' else None
-                wait(ready,'Actual owner channel did not reach trusted sharing readiness',timeout=45)
+                try:
+                    wait(ready,'Actual owner channel did not reach trusted sharing readiness',timeout=45)
+                except BaseException:
+                    diagnostic=desktop.path.with_name('native-fixture-stderr.txt')
+                    print(json.dumps({'ownerReadinessFailure':owner.call('status'),
+                        'validationAttempts':ca.bridge.count(),
+                        'ownedBackendErrors':diagnostic.read_text() if diagnostic.exists() else 'missing'}),flush=True)
+                    raise
                 first=owner.call('status');assert first['authority']['codeStatus']=='available'
                 assert len(list(desktop.data.glob('traverse/certificates/*/account-key.pem')))==(0 if supplied else 1)
                 assert (ca.bridge.count()==0) if supplied else (ca.bridge.count()>0)

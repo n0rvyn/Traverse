@@ -16,6 +16,11 @@ export PATH="$prefix/libexec/traverse:$PATH"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$prefix/lib/gstreamer-1.0"
 export GST_PLUGIN_PATH_1_0=
 export GST_PLUGIN_SCANNER="$prefix/libexec/gstreamer-1.0/gst-plugin-scanner"
+export PIPEWIRE_MODULE_DIR="$prefix/lib/pipewire-0.3"
+export SPA_PLUGIN_DIR="$prefix/lib/spa-0.2"
+export PIPEWIRE_CONFIG_DIR="$prefix/share/pipewire"
+export PIPEWIRE_CONFIG_PREFIX=
+export PIPEWIRE_CONFIG_NAME=client.conf
 cache=${XDG_CACHE_HOME:-"$HOME/.cache"}/traverse
 mkdir -p "$cache"
 export GST_REGISTRY="$cache/registry-@VERSION@-$(uname -m).bin"

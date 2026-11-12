@@ -1,20 +1,25 @@
 #include "sharing_window.hpp"
+#include "settings_dialog.hpp"
+#include "window_geometry.hpp"
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QDir>
+#include <QFileDialog>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QScreen>
 #include <QScrollArea>
 #include <QStyle>
+#include <QThread>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <chrono>
 #include <limits>
 
 namespace traverse {
-SharingWindow::SharingWindow(const QString &prefix, const QString &configuration)
-    : client(prefix, configuration, this) {
+SharingWindow::SharingWindow(const QString &prefix, const QString &configuration,std::shared_ptr<PublicCertificateIo> output)
+    : client(prefix, configuration, this), configuration_file(configuration), public_output(std::move(output)) {
     setWindowTitle("Traverse");
     setObjectName("sharingWindow");
     auto layout = new QVBoxLayout(this);
@@ -25,9 +30,12 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
     auto title_font = title->font(); title_font.setBold(true); title->setFont(title_font);
     auto settings = new QPushButton("Settings", this);
     settings->setObjectName("settingsButton");
-    // Internal Task1 entry only. Task2 supplies the pending-approved form;
-    // this incomplete window is not installed/promoted as the product entry.
-    settings->setEnabled(false);
+    connect(settings,&QPushButton::clicked,this,[this] {
+        if(settings_dialog) {settings_dialog->show();settings_dialog->raise();settings_dialog->activateWindow();return;}
+        settings_dialog=new SettingsDialog(configuration_file,this);
+        settings_dialog->setAttribute(Qt::WA_DeleteOnClose);
+        settings_dialog->show();
+    });
     heading->addWidget(title); heading->addStretch(); heading->addWidget(settings);
     layout->addLayout(heading);
     status = new QLabel("Starting sharing", this); status->setObjectName("connectionStatus");
@@ -41,7 +49,10 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
     scroll->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Ignored);
     scroll->setWidget(body); layout->addWidget(scroll,1);
-    auto url_label = new QLabel("Remote URL", this); details->addWidget(url_label);
+    auto url_heading=new QHBoxLayout;
+    auto url_label = new QLabel("Remote URL", this);url_label->setWordWrap(true);url_heading->addWidget(url_label);url_heading->addStretch();
+    export_ca=new QPushButton("Export CA certificate",this);export_ca->setObjectName("exportPublicCA");export_ca->setEnabled(false);export_ca->hide();
+    url_heading->addWidget(export_ca);details->addLayout(url_heading);
     auto url_row = new QHBoxLayout;
     url = new QLabel(this); url->setObjectName("remoteUrl"); url->setWordWrap(true);
     url->setTextFormat(Qt::PlainText); url->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -49,6 +60,9 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
     copy_url->setAccessibleName("Copy remote URL"); copy_url->setEnabled(false);
     url->setMinimumWidth(0); url->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
     url_row->addWidget(url,1); url_row->addWidget(copy_url); details->addLayout(url_row);
+    trust_instruction=new QLabel("Trust this CA once on each Chrome client.",this);trust_instruction->setObjectName("clientTrustInstruction");
+    trust_instruction->setWordWrap(true);trust_instruction->hide();details->addWidget(trust_instruction);
+    export_feedback=new QLabel(this);export_feedback->setObjectName("publicCAFeedback");export_feedback->setWordWrap(true);export_feedback->hide();details->addWidget(export_feedback);
     auto code_label = new QLabel("Pairing code", this); details->addWidget(code_label);
     auto code_row = new QHBoxLayout;
     code = new QLabel(this); code->setObjectName("pairingCode"); code->setTextFormat(Qt::PlainText);
@@ -81,6 +95,8 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
         code->setText("Updating…");client.newCode();
     });
     connect(stop_button, &QPushButton::clicked, this, [this] { stopSharing(); });
+    connect(export_ca,&QPushButton::clicked,this,[this]{choosePublicCertificate();});
+    client.publicCAExported=[this](bool ok,const QJsonObject &certificate,const QJsonObject &state){publicCertificateReply(ok,certificate,state);};
     code_expiry.setSingleShot(true);code_expiry.setTimerType(Qt::PreciseTimer);
     connect(&code_expiry,&QTimer::timeout,this,[this] {
         available_code.clear();copy_code->setEnabled(false);code->setText("Expired");
@@ -88,22 +104,64 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
     client.stateChanged = [this](const QJsonObject &state) { updateState(state); };
     client.codeRefreshed = [this](bool) { refreshing=false; };
     client.failed = [this](const QString &message) {
+        if(export_cancelled)export_cancelled->store(true);
+        export_available=false;export_ca->setEnabled(false);
         if (!closing) { status->setText("Sharing failed"); url_check->setText(message); }
     };
     client.stopped = [this](int result) {
+        if(export_cancelled)export_cancelled->store(true);
+        export_available=false;export_ca->setEnabled(false);
         sharing_ended=true;
         if (closing) { close(); QApplication::quit(); }
         else { status->setText(result == 0 ? "Sharing stopped" : "Sharing failed"); }
     };
-    auto screen = QApplication::primaryScreen();
-    auto available = screen ? screen->availableGeometry().size() : QSize(520,440);
-    available.rheight() -= style()->pixelMetric(QStyle::PM_TitleBarHeight);
-    resize(QSize(520,440).boundedTo(available));
+    fitDesktopWindow(*this,QSize(520,440));
+}
+SharingWindow::~SharingWindow() {if(export_cancelled)export_cancelled->store(true);}
+void SharingWindow::choosePublicCertificate() {
+    if(closing||!export_available||export_pending||export_writing)return;
+    if(certificate_picker){certificate_picker->raise();certificate_picker->activateWindow();return;}
+    export_feedback->clear();export_feedback->hide();
+    auto picker=new QFileDialog(this,"Export CA certificate",QDir::homePath(),"CA certificate (*.crt *.pem)");
+    picker->setObjectName("publicCertificatePicker");picker->setAcceptMode(QFileDialog::AcceptSave);picker->setFileMode(QFileDialog::AnyFile);
+    picker->setDefaultSuffix("crt");picker->selectFile("traverse-ca.crt");picker->setWindowModality(Qt::NonModal);picker->setAttribute(Qt::WA_DeleteOnClose);
+    certificate_picker=picker;
+    connect(picker,&QFileDialog::fileSelected,this,[this](const QString &destination) {
+        if(closing)return;
+        if(!export_available){export_feedback->setText("Public certificate is unavailable. Try again when sharing is ready.");export_feedback->show();return;}
+        export_destination=destination;export_cancelled=std::make_shared<std::atomic<bool>>(false);export_pending=true;export_ca->setEnabled(false);
+        export_feedback->setText("Preparing certificate…");export_feedback->show();client.exportCA();
+    });
+    picker->show();
+}
+void SharingWindow::publicCertificateReply(bool ok,const QJsonObject &certificate,const QJsonObject &state) {
+    if(closing||!export_pending)return;
+    export_pending=false;
+    if(!ok) {
+        export_destination.clear();export_feedback->setText("Public certificate is unavailable. Try again when sharing is ready.");export_feedback->show();export_ca->setEnabled(export_available);return;
+    }
+    export_writing=true;auto cancelled=export_cancelled;auto destination=export_destination;auto output=public_output;
+    auto error=std::make_shared<QString>();
+    auto worker=QThread::create([certificate,state,destination,cancelled,output,error] {
+        try {output->write(certificate,state,destination,cancelled);}
+        catch(const std::exception &failure){*error=QString::fromUtf8(failure.what());}
+    });
+    connect(worker,&QThread::finished,this,[this,error,cancelled] {
+        export_writing=false;export_destination.clear();
+        if(closing)return;
+        export_feedback->setText(cancelled->load()?"Certificate export cancelled.":error->isEmpty()?"Certificate saved.":*error);
+        export_feedback->show();export_ca->setEnabled(export_available);
+    });
+    connect(worker,&QThread::finished,worker,&QObject::deleteLater);worker->start();
 }
 void SharingWindow::updateState(const QJsonObject &state) {
     code_expiry.stop();
     available_code.clear(); copy_code->setEnabled(false); new_code->setEnabled(false);
     if (closing) return;
+    export_available=!state.isEmpty()&&state.value("localHttps").toObject().value("status").toString()=="passed"&&
+        state.value("issuer").toObject().value("localAuthority").toObject().value("available").toBool();
+    if(export_available){export_ca->show();trust_instruction->show();}
+    export_ca->setEnabled(export_available&&!export_pending&&!export_writing);
     if (state.isEmpty()) {
         code->setText("Unavailable"); status->setText("Sharing status unavailable");
         url_check->setText("URL: Status unavailable"); media_check->setText("Media: Status unavailable");
@@ -144,12 +202,18 @@ void SharingWindow::updateState(const QJsonObject &state) {
 void SharingWindow::stopSharing() {
     if (closing) return;
     closing = true; available_code.clear(); code->setText("Unavailable");
+    if(export_cancelled)export_cancelled->store(true);
     code_expiry.stop();
     copy_code->setEnabled(false); new_code->setEnabled(false);
     status->setText("Stopping sharing"); client.stop();
+    if(certificate_picker)certificate_picker->reject();
 }
 void SharingWindow::closeEvent(QCloseEvent *event) {
-    if(sharing_ended) { event->accept(); return; }
+    if(sharing_ended) {
+        if(export_cancelled)export_cancelled->store(true);
+        if(certificate_picker)certificate_picker->reject();
+        event->accept(); return;
+    }
     event->ignore(); stopSharing();
 }
 void SharingWindow::start() { client.start(); }

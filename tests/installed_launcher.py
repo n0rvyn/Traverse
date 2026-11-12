@@ -46,20 +46,27 @@ with tempfile.TemporaryDirectory(prefix='traverse-launcher-') as tmp:
     subprocess.run(['traverse','--config',str(path),'--check-config'],env=env,check=True)
     context=ssl.create_default_context(cafile=str(certificate))
     for crash in (False,True):
-        launch=subprocess.Popen(['traverse','--config',str(path)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        launcher_log=tempfile.TemporaryFile(mode='w+')
+        launch=subprocess.Popen(['traverse','--config',str(path)],env=env,stdout=subprocess.DEVNULL,stderr=launcher_log)
         owned=[]
+        last_response=None
+        def failure(message):
+            launcher_log.seek(0)
+            return AssertionError(message+' '+json.dumps(dict(children=owned,lastResponse=last_response,
+                launcherErrors=launcher_log.read())))
         try:
             end=time.monotonic()+20
             while time.monotonic()<end:
-                assert launch.poll() is None,'Launcher exited before HTTPS readiness'
+                if launch.poll() is not None:raise failure('Launcher exited before HTTPS readiness')
                 owned=children(launch.pid)
                 try:
                     urllib.request.urlopen(config['origin']+'/api/stats',context=context,timeout=1)
                 except urllib.error.HTTPError as error:
+                    last_response=dict(status=error.code)
                     if error.code==403 and len(owned)==2:break
-                except (urllib.error.URLError,TimeoutError):pass
+                except (urllib.error.URLError,TimeoutError) as error:last_response=dict(error=str(error))
                 time.sleep(.05)
-            else:raise AssertionError('Installed supervisor did not start the real HTTPS service')
+            else:raise failure('Installed supervisor did not start the real HTTPS service')
             # A second launcher cannot replace or revoke this existing instance.
             duplicate=subprocess.run(['traverse','--config',str(path)],env=env,capture_output=True,text=True,timeout=10)
             assert duplicate.returncode!=0 and all(alive(pid) for pid in owned)
@@ -81,3 +88,4 @@ with tempfile.TemporaryDirectory(prefix='traverse-launcher-') as tmp:
                     assert Path(executable).parent==prefix and Path(executable).name in ('traverse-adapter','traverse-service')
                     signal.pidfd_send_signal(fd,signal.SIGTERM)
                 finally:os.close(fd)
+            launcher_log.close()

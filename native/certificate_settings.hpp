@@ -3,7 +3,7 @@
 #include <string>
 
 namespace traverse {
-enum class CertificateMode { Supplied, Automatic };
+enum class CertificateMode { Supplied, Automatic, Local };
 
 // One typed contract for old supplied configurations and consented automatic
 // state. Parsing performs no enrollment, filesystem writes or network calls.
@@ -18,5 +18,6 @@ struct CertificateSettings {
                                      const std::string &domain,
                                      const std::string &configuration_directory);
     std::string managed_state_directory(const std::string &data_home) const;
+    std::string store_identity() const;
 };
 } // namespace traverse

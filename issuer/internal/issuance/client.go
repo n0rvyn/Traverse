@@ -22,7 +22,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) int {
 	if ctx.Err() != nil {
 		result.Code = "cancelled"
 	} else if err == nil {
-		if request.Operation == "describe" {
+		if localOperation(request.Operation) {
+			result = localCertificates(ctx, request, time.Now())
+		} else if request.Operation == "describe" {
 			core, _, close, e := newCore(ctx, request, "", nil)
 			if e == nil {
 				terms := core.GetDirectory().Meta.TermsOfService

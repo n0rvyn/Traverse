@@ -1,0 +1,17 @@
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -764,10 +764,13 @@
+         GST_BUFFER_DTS (buf) = GST_BUFFER_PTS (buf) + h->dts_offset;
+     }
+     GST_BUFFER_OFFSET (buf) = h->seq;
+-  } else {
++  } else if (b->time != 0 && (pwsrc->delay <= 0 || b->time >= (uint64_t) pwsrc->delay)) {
+     GST_BUFFER_PTS (buf) = b->time - pwsrc->delay;
+     GST_BUFFER_DTS (buf) = b->time - pwsrc->delay;
+   }
++  /* Older servers can leave the cycle timestamp unset. Keep NONE in that
++   * case so GstBaseSrc do-timestamp uses running time, rather than treating
++   * every changing desktop frame as presentation time zero. */
+ 
+   if (pwsrc->media_type == SPA_MEDIA_TYPE_video) {
+     if (pwsrc->video_info.fps_n) {

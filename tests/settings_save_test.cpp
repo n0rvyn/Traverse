@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <thread>
 
 using namespace traverse;
 using Json=nlohmann::json;
@@ -81,6 +82,26 @@ class SettingsSaveTests:public QObject {
         QVERIFY(endpoint.public_url()=="https://other.settings.example.test:9443/traverse/");
         QVERIFY(endpoint.certificates.certificate==(root->path()+"/certificate.pem").toStdString());
         struct stat saved{};QVERIFY(!stat(path.c_str(),&saved));QCOMPARE(int(saved.st_mode&0777),0600);QVERIFY(noTemporary());
+    }
+    void observerMetadataSurvivesSaveAndNextLaunch() {
+        auto configured=original;
+        configured["observerSettings"]={{"host","observer.example.test"},{"port",9443},
+            {"caFile","observer-root.pem"},{"registrationId",std::string(32,'a')},
+            {"tokenFile","registration.key"},{"timeoutMs",nullptr}};
+        QVERIFY(bytes(QString::fromStdString(path.string()),QByteArray::fromStdString(configured.dump())));
+        ConfigurationStore store(path);auto base=store.read();auto draft=base.document;draft["port"]=10443;
+        auto result=store.save(base,draft);
+        QVERIFY2(result.outcome==SaveOutcome::Saved,result.detail.c_str());
+        QVERIFY(base.document==configured);
+        ConfigurationStore reopened(path);auto next=reopened.read();
+        QVERIFY(next.document["observerSettings"]==configured["observerSettings"]);
+        auto endpoint=EndpointSettings::parse(next.document,"",root->path().toStdString());
+        QVERIFY(endpoint.observer.has_value());
+        QVERIFY(endpoint.observer->token_file==(root->path()+"/registration.key").toStdString());
+        QVERIFY(!endpoint.observer->timeout_ms);
+        QCOMPARE(endpoint.port,std::uint16_t(10443));
+        // Metadata validation and saving must not require reading the credential or contacting the observer.
+        QVERIFY(!QFile::exists(root->path()+"/registration.key"));QVERIFY(noTemporary());
     }
     void invalidDraftPreservesExactOldBytes() {
         ConfigurationStore store(path);auto base=store.read();auto before=contents();
@@ -202,6 +223,100 @@ class SettingsSaveTests:public QObject {
         int accepted=accept(listener,nullptr,nullptr);QVERIFY(accepted>=0);close(accepted);close(positive);close(listener);
         auto entries=QDir(root->path()).entryList(QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden);
         QVERIFY(entries.size()==4); // Config, existing certificate/key, owned save lock; no enrollment state.
+    }
+    void explicitLocalSettingsAreSavedWithoutCreatingAuthority() {
+        ConfigurationStore store(path);auto base=store.read();auto local=original;
+        local.erase("certificate");local.erase("privateKey");
+        local["certificateSettings"]={{"mode","local"}};
+        auto result=store.save(base,local);
+        QVERIFY(result.outcome==SaveOutcome::Saved);
+        QVERIFY(store.read().document==local);
+        auto entries=QDir(root->path()).entryList(QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden);
+        QVERIFY(entries.size()==4); // Saved config, old certificate/key and save lock only.
+    }
+    void createOnlyAndNoAuthorityOnCreation() {
+        QVERIFY(QFile::remove(QString::fromStdString(path.string())));
+        auto local=original;local.erase("certificate");local.erase("privateKey");local["certificateSettings"]={{"mode","local"}};
+        ConfigurationStore store(path);auto created=store.create(local);
+        QVERIFY2(created.outcome==SaveOutcome::Saved,created.detail.c_str());QVERIFY(created.verified.has_value());
+        QVERIFY(store.read().document==local);auto saved=contents();
+        auto changed=local;changed["port"]=9443;QVERIFY(store.create(changed).outcome==SaveOutcome::NotSaved);QVERIFY(contents()==saved);
+        struct stat metadata{};QVERIFY(!stat(path.c_str(),&metadata));QCOMPARE(int(metadata.st_mode&0777),0600);QCOMPARE(int(metadata.st_nlink),1);
+        QVERIFY(noTemporary());QVERIFY(!QFile::exists(root->path()+"/traverse/certificates"));
+    }
+    void createMissingDirectoriesAndRejectExistingObjects() {
+        auto local=original;local.erase("certificate");local.erase("privateKey");local["certificateSettings"]={{"mode","local"}};
+        auto nested=std::filesystem::path(root->path().toStdString())/"new/config/traverse/config.json";
+        ConfigurationStore store(nested);QVERIFY(store.create(local).outcome==SaveOutcome::Saved);
+        struct stat metadata{};QVERIFY(!stat(nested.parent_path().c_str(),&metadata));QCOMPARE(int(metadata.st_mode&0777),0700);
+        auto alias=root->path()+"/linked-config.json";QVERIFY(!symlink(path.c_str(),alias.toUtf8().constData()));
+        ConfigurationStore linked(alias.toStdString());auto before=contents();QVERIFY(linked.create(local).outcome==SaveOutcome::NotSaved);QVERIFY(contents()==before);
+        auto broken=root->path()+"/broken-config.json";QVERIFY(!symlink("missing-target",broken.toUtf8().constData()));
+        ConfigurationStore broken_store(broken.toStdString());QVERIFY(broken_store.create(local).outcome==SaveOutcome::NotSaved);
+    }
+    void simultaneousCreatesDoNotReplaceWinner() {
+        QVERIFY(QFile::remove(QString::fromStdString(path.string())));
+        auto first=original;first.erase("certificate");first.erase("privateKey");first["certificateSettings"]={{"mode","local"}};
+        auto second=first;second["port"]=9443;ConfigurationStore a(path),b(path);
+        std::optional<ConfigurationSave> left,right;
+        std::thread x([&]{left=a.create(first);}),y([&]{right=b.create(second);});x.join();y.join();
+        QCOMPARE(int(left->outcome==SaveOutcome::Saved)+int(right->outcome==SaveOutcome::Saved),1);
+        ConfigurationStore actual(path);QVERIFY(actual.read().document==(left->outcome==SaveOutcome::Saved?first:second));QVERIFY(noTemporary());
+    }
+    void createPublicationFailuresRemainTruthful() {
+        struct PublishIo:FaultIo {
+            enum Case {Before,After,Directory,Readback};Case selected;
+            explicit PublishIo(Case value):selected(value){}
+            int publishNew(int directory,const char *source,const char *destination) const override {
+                if(selected==Before){errno=EIO;return -1;}
+                auto result=ConfigurationIo::publishNew(directory,source,destination);replaced=!result;
+                if(!result&&selected==After){errno=EIO;return -1;}return result;
+            }
+            int sync(int fd) const override {
+                struct stat metadata{};
+                if(selected==Directory&&replaced&&!fstat(fd,&metadata)&&S_ISDIR(metadata.st_mode)){errno=EIO;return -1;}
+                return ConfigurationIo::sync(fd);
+            }
+            int openRead(int directory,const char *name) const override {
+                if(selected==Readback&&replaced){errno=EIO;return -1;}return ConfigurationIo::openRead(directory,name);
+            }
+        };
+        auto local=original;local.erase("certificate");local.erase("privateKey");local["certificateSettings"]={{"mode","local"}};
+        for(auto fault:{PublishIo::Before,PublishIo::After,PublishIo::Directory,PublishIo::Readback}) {
+            auto destination=std::filesystem::path(root->path().toStdString())/("new-"+std::to_string(fault)+".json");
+            auto io=std::make_shared<PublishIo>(fault);ConfigurationStore store(destination,io);auto result=store.create(local);
+            if(fault==PublishIo::Before) {QVERIFY(result.outcome==SaveOutcome::NotSaved);QVERIFY(!std::filesystem::exists(destination));}
+            else {
+                QVERIFY(result.outcome==SaveOutcome::Uncertain);QVERIFY(std::filesystem::exists(destination));
+                QVERIFY(store.create(local).outcome==SaveOutcome::Uncertain);ConfigurationStore observed(destination);QVERIFY(observed.read().document==local);
+            }
+            QVERIFY(noTemporary());
+        }
+    }
+    void createChangedParentIsUncertainAndPreservesReplacement() {
+        struct Rebind:ConfigurationIo {
+            std::filesystem::path named,moved;
+            int publishNew(int directory,const char *temporary,const char *destination) const override {
+                auto result=ConfigurationIo::publishNew(directory,temporary,destination);if(result)return result;
+                std::filesystem::rename(named,moved);std::filesystem::create_directory(named);
+                std::filesystem::permissions(named,std::filesystem::perms::owner_all);
+                auto replacement=Json{{"schemaVersion",1},{"domain","replacement.example.test"},{"port",9443},{"certificateSettings",{{"mode","local"}}}};
+                QFile file(QString::fromStdString((named/destination).string()));
+                if(!file.open(QIODevice::WriteOnly)||file.write(QByteArray::fromStdString(replacement.dump()))<0)throw std::runtime_error("Controlled creation rebind failed");
+                file.setPermissions(QFile::ReadOwner|QFile::WriteOwner);return 0;
+            }
+        };
+        auto io=std::make_shared<Rebind>();io->named=std::filesystem::path(root->path().toStdString())/"new-parent";io->moved=std::filesystem::path(root->path().toStdString())/"old-parent";
+        auto local=original;local.erase("certificate");local.erase("privateKey");local["certificateSettings"]={{"mode","local"}};
+        ConfigurationStore store(io->named/"config.json",io);auto result=store.create(local);QVERIFY(result.outcome==SaveOutcome::Uncertain&&!result.verified);
+        auto observed=store.read();QVERIFY(observed.document.at("domain")=="replacement.example.test");
+        ConfigurationStore retained(io->moved/"config.json");QVERIFY(retained.read().document==local);
+    }
+    void unsafeCreationParentIsRejected() {
+        auto parent=std::filesystem::path(root->path().toStdString())/"unsafe-parent";std::filesystem::create_directory(parent);QVERIFY(!chmod(parent.c_str(),0777));
+        auto local=original;local.erase("certificate");local.erase("privateKey");local["certificateSettings"]={{"mode","local"}};
+        ConfigurationStore store(parent/"config.json");auto denied=store.create(local);QVERIFY(denied.outcome==SaveOutcome::NotSaved&&denied.problem==ConfigurationProblem::UnsafePath);
+        QVERIFY(!std::filesystem::exists(parent/"config.json"));QVERIFY(!chmod(parent.c_str(),0700));QVERIFY(store.create(local).outcome==SaveOutcome::Saved);
     }
 };
 QTEST_GUILESS_MAIN(SettingsSaveTests)

@@ -145,12 +145,13 @@ int main(int argc, char **argv) {
                 eventually([&] {
                     auto batch = owner.receive();
                     received.insert(received.end(), batch.begin(), batch.end());
-                    return received.size() == 3;
+                    return received.size() == 4;
                 });
                 require(received[0].request_id == 10 && received[0].action == HostAction::Status &&
                             received[1].request_id == 11 &&
                             received[1].action == HostAction::NewCode &&
-                            received[2].request_id == 12 && received[2].action == HostAction::Stop,
+                            received[2].request_id == 12 && received[2].action == HostAction::CheckConnection &&
+                            received[3].request_id == 13 && received[3].action == HostAction::Stop,
                         "Fragmented/coalesced commands changed order or identity");
             },
             [](int fd, int control, pid_t) {
@@ -162,7 +163,7 @@ int main(int argc, char **argv) {
                 write_all(fd, first.substr(2, 5));
                 write_all(control, "2");
                 require(read_json(fd).at("stage") == 2, "Partial body acknowledgment missing");
-                write_all(fd, first.substr(7) + command(11, "new-code") + command(12, "stop"));
+                write_all(fd, first.substr(7) + command(11, "new-code") + command(12, "check-connection") + command(13, "stop"));
                 write_all(control, "3");
             });
         for (auto invalid :
@@ -262,6 +263,36 @@ int main(int argc, char **argv) {
                 require(reply.at("requestId") == 41 && reply.at("ok") == true &&
                             reply.at("phase") == "stopping",
                         "Producer lookup delayed Stop");
+            });
+        scenario(
+            [](int fd,int control,pid_t parent) {
+                traverse::HostSupervisor owner(fd,parent,"check-instance");int checks=0;
+                owner.bind([&]{return Json{{"checks",checks}};},{},[&]{++checks;return Json{{"ok",true}};});
+                write_all(control,"r");eventually([&]{return owner.pump();});
+                require(checks==1,"Private connection action did not reach callback");
+            },
+            [](int fd,int control,pid_t) {
+                require(read_bytes(control,1)=="r","Connection supervisor missing");read_json(fd);
+                write_all(fd,command(50,"check-connection"));auto reply=read_json(fd);
+                require(reply.at("requestId")==50 && reply.at("ok")==true && reply.at("state").at("checks")==1,
+                    "Connection check acknowledgement/state missing");
+                write_all(fd,command(51,"stop"));require(read_json(fd).at("requestId")==51,"Stop reply missing");
+            });
+        scenario(
+            [](int fd,int control,pid_t parent) {
+                traverse::HostSupervisor owner(fd,parent,"export-instance");int exports=0;
+                owner.bind([&]{return Json{{"exports",exports}};},{},{},[&]{++exports;return Json{{"ok",true},{"publicCA",{{"publicOnly",true}}}};});
+                write_all(control,"r");eventually([&]{return owner.pump();});
+                require(exports==1,"Export callback count changed or Stop lost priority");
+            },
+            [](int fd,int control,pid_t) {
+                require(read_bytes(control,1)=="r","Export supervisor missing");auto initial=read_json(fd);
+                require(!initial.contains("publicCA"),"Public PEM entered periodic state");
+                write_all(fd,command(60,"export-ca"));auto reply=read_json(fd);
+                require(reply.at("requestId")==60&&reply.at("ok")==true&&reply.at("publicCA").at("publicOnly")==true&&reply.at("state").at("exports")==1,
+                    "Private public export reply/correlation missing");
+                write_all(fd,command(61,"export-ca")+command(62,"stop"));
+                require(read_json(fd).at("requestId")==62,"Export callback delayed Stop");
             });
         std::cout
             << "Host framing, private identity, exec isolation, backpressure Stop and EOF passed\n";

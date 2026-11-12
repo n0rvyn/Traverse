@@ -72,7 +72,9 @@ int main(int argc, char **argv) {
             json environment = json::object();
             for (const char *name : {"TRAVERSE_RUNTIME_PREFIX", "LD_LIBRARY_PATH", "PATH",
                  "GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SCANNER",
-                 "GST_REGISTRY", "SSL_CERT_FILE", "SSL_CERT_DIR"}) {
+                 "GST_REGISTRY", "SSL_CERT_FILE", "SSL_CERT_DIR", "PIPEWIRE_MODULE_DIR",
+                 "SPA_PLUGIN_DIR", "PIPEWIRE_CONFIG_DIR", "PIPEWIRE_CONFIG_PREFIX",
+                 "PIPEWIRE_CONFIG_NAME"}) {
                 if (const char *value = getenv(name))
                     environment[name] = value;
             }
@@ -101,6 +103,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Create " + config_path +
                                      " from config.example.json, or pass --config FILE");
         auto config = json::parse(file);
+        if(config.is_object() && config.contains("observerSettings"))
+            config=traverse::secure_observer_configuration(config_path);
         auto settings = traverse::EndpointSettings::parse(
             config, getenv("DISPLAY") ? getenv("DISPLAY") : "",
             std::filesystem::absolute(config_path).parent_path().string());

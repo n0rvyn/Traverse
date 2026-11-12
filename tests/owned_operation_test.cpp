@@ -16,7 +16,9 @@ static int fixture(int argc, char **argv) {
     auto request = json::parse(input);
     require(request.at("owner").get<pid_t>() == getppid(), "Operation arguments changed owner");
     auto mode = request.at("mode").get<std::string>();
-    if (mode == "hold") {
+    if (mode == "hold" || mode == "ignore-term") {
+        if(mode == "ignore-term")signal(SIGTERM,SIG_IGN);
+        std::cout << "pending\n" << std::flush;
         std::ofstream ready(request.at("ready").get<std::string>());
         ready << "ready";
         ready.close();
@@ -87,6 +89,26 @@ int main(int argc, char **argv) {
             }
         } cleanup{directory};
         auto marker = directory / "cancel-ready";
+        {
+            auto slow_marker=directory/"slow-ready";
+            OwnedOperation operation(binary,json{{"owner",getpid()},{"mode","ignore-term"},
+                {"ready",slow_marker.string()}}.dump());
+            auto pid=operation.id();ready(operation,slow_marker);
+            operation.poll();
+            require(operation.accumulated_output()=="pending\n","Streaming output unavailable before completion");
+            auto started=Clock::now();operation.request_stop();operation.request_stop();
+            require(Clock::now()-started<std::chrono::milliseconds(100),"Cancellation blocked supervisor");
+            require(!operation.poll() && operation.id()==pid,"Cancellation failed to preserve live child for reaping");
+            auto watchdog=started+std::chrono::seconds(8);
+            std::optional<OwnedOperation::Result> result;
+            while(!(result=operation.poll())) {
+                require(Clock::now()<watchdog,"Ignoring child survived cancellation grace");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            require(result->exit_status==128+SIGKILL && result->output=="pending\n","Cancelled operation lost output or exit status");
+            require(Clock::now()-started>=std::chrono::seconds(5),"Existing cancellation grace shortened");
+            errno=0;require(waitpid(pid,nullptr,WNOHANG)==-1 && errno==ECHILD,"Asynchronously cancelled child not reaped");
+        }
         {
             OwnedOperation operation(
                 binary,

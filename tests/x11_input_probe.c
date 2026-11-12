@@ -2,6 +2,7 @@
  * Never exposed on the network. Used to inspect key/button state after failures.
  */
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/Xatom.h>
 #include <X11/extensions/XTest.h>
@@ -16,7 +17,10 @@ static Window find_window(Display *d,Window parent,const char *title){
     char *name=NULL;
     if(XFetchName(d,parent,&name) && name){
         int match=!strcmp(name,title);XFree(name);
-        if(match)return parent;
+        if(match){
+            XWindowAttributes attributes;
+            if(XGetWindowAttributes(d,parent,&attributes)&&attributes.map_state==IsViewable)return parent;
+        }
     }
     Window root,up,*children=NULL;unsigned int count=0;
     if(!XQueryTree(d,parent,&root,&up,&children,&count))return None;
@@ -27,7 +31,21 @@ static Window find_window(Display *d,Window parent,const char *title){
 }
 int main(int argc,char **argv){
     Display *d=XOpenDisplay(NULL);if(!d){fputs("XOpenDisplay failed\n",stderr);return 1;}
-    if(argc==3 && (!strcmp(argv[1],"window") || !strcmp(argv[1],"focus"))){
+    if(argc==3 && !strcmp(argv[1],"capture")){
+        int screen=DefaultScreen(d),width=DisplayWidth(d,screen),height=DisplayHeight(d,screen);
+        XImage *image=XGetImage(d,RootWindow(d,screen),0,0,width,height,AllPlanes,ZPixmap);
+        FILE *output=fopen(argv[2],"wb");
+        if(!image||!output){if(image)XDestroyImage(image);if(output)fclose(output);XCloseDisplay(d);return 4;}
+        fprintf(output,"P6\n%d %d\n255\n",width,height);
+        for(int y=0;y<height;y++)for(int x=0;x<width;x++){
+            unsigned long pixel=XGetPixel(image,x,y);
+            unsigned char rgb[3]={(unsigned char)((pixel>>16)&255),(unsigned char)((pixel>>8)&255),(unsigned char)(pixel&255)};
+            if(fwrite(rgb,1,3,output)!=3){fclose(output);XDestroyImage(image);XCloseDisplay(d);return 4;}
+        }
+        int failed=fclose(output);XDestroyImage(image);XCloseDisplay(d);
+        if(failed)return 4;fputs("{\"captured\":true}\n",stdout);return 0;
+    }
+    if(argc==3 && (!strcmp(argv[1],"window") || !strcmp(argv[1],"focus") || !strcmp(argv[1],"close"))){
         Window w=find_window(d,DefaultRootWindow(d),argv[2]);
         if(!w){fputs("Named window not found\n",stderr);XCloseDisplay(d);return 3;}
         if(!strcmp(argv[1],"focus")){
@@ -36,6 +54,14 @@ int main(int argc,char **argv){
             event.xclient.format=32;event.xclient.data.l[0]=2;
             XSendEvent(d,DefaultRootWindow(d),False,SubstructureRedirectMask|SubstructureNotifyMask,&event);
             XRaiseWindow(d,w);XSetInputFocus(d,w,RevertToParent,CurrentTime);XSync(d,False);
+        }
+        if(!strcmp(argv[1],"close")){
+            XEvent event={0};event.xclient.type=ClientMessage;event.xclient.window=w;
+            event.xclient.message_type=XInternAtom(d,"WM_PROTOCOLS",False);event.xclient.format=32;
+            event.xclient.data.l[0]=XInternAtom(d,"WM_DELETE_WINDOW",False);
+            event.xclient.data.l[1]=CurrentTime;
+            XSendEvent(d,w,False,NoEventMask,&event);XSync(d,False);
+            fputs("{\"closing\":true}\n",stdout);XCloseDisplay(d);return 0;
         }
         XWindowAttributes a;XGetWindowAttributes(d,w,&a);int x,y;Window child;
         XTranslateCoordinates(d,w,DefaultRootWindow(d),0,0,&x,&y,&child);
@@ -56,7 +82,7 @@ int main(int argc,char **argv){
     }else if(argc==4 && !strcmp(argv[1],"move")){
         XTestFakeMotionEvent(d,DefaultScreen(d),atoi(argv[2]),atoi(argv[3]),CurrentTime);XSync(d,False);
     }else if(argc!=2 || strcmp(argv[1],"query")){
-        fputs("usage: x11-input-probe query | key KEYSYM down|up | press KEYSYM | move X Y | window TITLE | focus TITLE\n",stderr);XCloseDisplay(d);return 2;
+        fputs("usage: x11-input-probe query | key KEYSYM down|up | press KEYSYM | move X Y | window TITLE | focus TITLE | close TITLE\n",stderr);XCloseDisplay(d);return 2;
     }
     char state[32];XQueryKeymap(d,state);
     Window root,child;int rx,ry,wx,wy;unsigned int mask;

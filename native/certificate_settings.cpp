@@ -123,6 +123,20 @@ CertificateSettings CertificateSettings::parse(const json &config, bool standalo
         if (!standalone || !options.is_object())
             throw std::runtime_error("Versioned certificate settings required");
         auto mode = text(options, "mode", true);
+        if (mode == "local") {
+            fields(options, {"mode"});
+            if (config.contains("certificate") || config.contains("privateKey"))
+                throw std::runtime_error("Local and supplied certificate settings cannot be mixed");
+            result.mode = CertificateMode::Local;
+            in6_addr address{};
+            if (inet_pton(AF_INET6, domain.c_str(), &address) == 1 && IN6_IS_ADDR_V4MAPPED(&address)) {
+                char normalized[INET_ADDRSTRLEN];
+                if (!inet_ntop(AF_INET, address.s6_addr + 12, normalized, sizeof(normalized)))
+                    throw std::runtime_error("Cannot normalize local certificate address");
+                result.domain = normalized;
+            }
+            return result;
+        }
         if (mode == "automatic") {
             fields(options, {"mode", "directory", "termsURL", "termsAgreed", "apiTrustFile",
                              "certificateTrustFile"});
@@ -166,12 +180,16 @@ CertificateSettings CertificateSettings::parse(const json &config, bool standalo
 }
 
 std::string CertificateSettings::managed_state_directory(const std::string &data_home) const {
-    if (mode != CertificateMode::Automatic)
+    if (mode == CertificateMode::Supplied)
         throw std::logic_error("Supplied certificates have no managed state");
     auto path = std::filesystem::path(data_home);
     if (!path.is_absolute() || path.lexically_normal().string() != data_home)
         throw std::runtime_error("Absolute clean data directory required");
-    const auto identity = nlohmann::json::array({domain, directory}).dump();
+    // Retain the existing public-CA identity byte-for-byte. Local roots use a
+    // distinct provider namespace and survive port/path changes.
+    const auto identity = mode == CertificateMode::Local
+                              ? nlohmann::json::array({"local-hostname:v1", domain}).dump()
+                              : nlohmann::json::array({domain, directory}).dump();
     unsigned char digest[SHA256_DIGEST_LENGTH];
     if (!SHA256(reinterpret_cast<const unsigned char *>(identity.data()), identity.size(), digest))
         throw std::runtime_error("Cannot derive managed certificate identity");
@@ -180,5 +198,10 @@ std::string CertificateSettings::managed_state_directory(const std::string &data
     for (auto byte : digest)
         encoded << std::setw(2) << static_cast<unsigned>(byte);
     return (path / "traverse/certificates" / encoded.str()).string();
+}
+std::string CertificateSettings::store_identity() const {
+    if (mode == CertificateMode::Supplied)
+        throw std::logic_error("Supplied certificates have no managed identity");
+    return mode == CertificateMode::Local ? "local-hostname:v1:" + domain : directory;
 }
 } // namespace traverse

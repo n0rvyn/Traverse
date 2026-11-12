@@ -4,6 +4,8 @@
 #include "host_channel.hpp"
 #include "owner_state.hpp"
 #include "private_socket_directory.hpp"
+#include "readiness_manager.hpp"
+#include "readiness_network.hpp"
 #include "tls_certificate.hpp"
 #include <arpa/inet.h>
 #include <ctime>
@@ -83,6 +85,9 @@ class Sharing {
   public:
     std::unique_ptr<Child> adapter, turn, service, frontend, validation;
     std::unique_ptr<CertificateManager> certificates;
+    std::unique_ptr<ReadinessManager> readiness;
+    std::unique_ptr<ReadinessNetwork> readiness_network;
+    bool network_observation_healthy=true;
     bool owns_adapter = false;
     explicit Sharing(const std::string &socket) : ipc(socket) {}
     void check() {
@@ -112,6 +117,7 @@ class Sharing {
         }
         if (adapter)
             adapter->stop();
+        readiness.reset();
         if (certificates)
             certificates->stop();
         if (validation)
@@ -265,7 +271,7 @@ bool https_ready(const EndpointSettings &settings) {
         return false;
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(SSL_CTX_new(TLS_client_method()),
                                                               SSL_CTX_free);
-    bool custom_trust = settings.certificates.mode == CertificateMode::Automatic &&
+    bool custom_trust = settings.certificates.mode != CertificateMode::Supplied &&
                         !settings.certificates.certificate_trust_file.empty();
     if (!context ||
         (custom_trust ? SSL_CTX_load_verify_locations(
@@ -328,6 +334,8 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     Ipc ipc(socket);
     Sharing children(socket);
     const bool automatic = settings.certificates.mode == CertificateMode::Automatic;
+    const bool local = settings.certificates.mode == CertificateMode::Local;
+    const bool managed = automatic || local;
     HostSupervisor absent;
     auto &host = owner ? *owner : absent;
     bool service_ready = false, https_verified = false;
@@ -362,11 +370,15 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                 }
                 if (children.certificates)
                     state["issuer"] = children.certificates->status();
+                if(children.readiness) {
+                    state["urlCheck"]=children.readiness->snapshot();
+                    state["urlCheck"]["networkObservation"]=children.network_observation_healthy?"active":"unavailable";
+                }
                 if (children.frontend) {
                     try {
                         auto certificate = read_tls_certificate_status(
                             (files.directory / "tls-status.json").string(), children.frontend->id(),
-                            automatic);
+                            managed);
                         state["certificate"] = {
                             {"status", certificate.available ? "passed" : "pending"},
                             {"available", certificate.available},
@@ -395,6 +407,19 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                     return json{{"ok", false}, {"error", "producer-unavailable"}};
                 validate_owner_state(std::move(result.second), children.adapter->id());
                 return json{{"ok", true}};
+            },
+            [&] {
+                if(!children.readiness)return json{{"ok",false},{"error","not-configured"}};
+                return children.readiness->start()?json{{"ok",true}}:json{{"ok",false},{"error","check-running"}};
+            },
+            [&] {
+                if (!local || !https_verified || !children.certificates || !children.frontend || stopping)
+                    return json{{"ok",false},{"error","not-ready"}};
+                try {
+                    return json{{"ok",true},{"publicCA",children.certificates->public_authority()}};
+                } catch (const std::exception &) {
+                    return json{{"ok",false},{"error","authority-unavailable"}};
+                }
             });
     }
     auto pump_owner = [&] {
@@ -405,10 +430,10 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     pump_owner();
     if (stopping)
         return 0;
-    if (automatic) {
+    if (managed) {
         const char *data = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
         if ((!data || !*data) && (!home || !*home))
-            throw std::runtime_error("Automatic certificates require an owner data directory");
+            throw std::runtime_error("Managed certificates require an owner data directory");
         auto data_home =
             std::filesystem::path(data && *data ? data : std::string(home) + "/.local/share");
         if (!data_home.is_absolute())
@@ -420,6 +445,21 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
             (sockets.directory / "v").string());
         settings.certificates.certificate = children.certificates->bundle();
         settings.certificates.private_key = children.certificates->bundle();
+        settings.certificates.certificate_trust_file = children.certificates->trust_file();
+        if (local) {
+            host.stage("certificate", "waiting-certificate");
+            while (!stopping && !children.certificates->application().available) {
+                pump_owner();
+                if (stopping)
+                    return 0;
+                children.certificates->tick();
+                if (children.certificates->status().at("phase") == "failed")
+                    throw std::runtime_error("Local certificate preparation failed");
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (stopping)
+                return 0;
+        }
     }
     Reservation http, turn;
     auto addresses = relay_addresses();
@@ -548,7 +588,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                                                    (files.directory / "tls-status.json").string()};
     // The binding helper intentionally clears environment and changes cwd. Carry
     // only the caller's selected trust locations as explicit, absolute arguments.
-    if (automatic && !settings.certificates.certificate_trust_file.empty()) {
+    if (managed && !settings.certificates.certificate_trust_file.empty()) {
         frontend_arguments.insert(frontend_arguments.end(),
                                   {"--trust-file", settings.certificates.certificate_trust_file,
                                    "--trust-directory", ""});
@@ -559,7 +599,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
              *file ? std::filesystem::absolute(file).lexically_normal().string() : ""});
     }
     if (const char *directory = getenv("SSL_CERT_DIR");
-        directory && !(automatic && !settings.certificates.certificate_trust_file.empty())) {
+        directory && !(managed && !settings.certificates.certificate_trust_file.empty())) {
         std::string resolved, paths(directory);
         size_t begin = 0;
         while (true) {
@@ -621,7 +661,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         }
         children.certificates->validation_route(validation_ready);
     }
-    CertificateObserver certificate_observer(automatic);
+    CertificateObserver certificate_observer(managed);
     auto certificate_status = (files.directory / "tls-status.json").string();
     auto initial =
         read_tls_certificate_status(certificate_status, children.frontend->id(), proof_only);
@@ -677,6 +717,15 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     if (!ready)
         throw std::runtime_error("Local HTTPS endpoint did not become ready");
     https_verified = true;
+    if(settings.observer) {
+        children.readiness_network=std::make_unique<ReadinessNetwork>();
+        children.network_observation_healthy=children.readiness_network->poll().healthy;
+        children.readiness=std::make_unique<ReadinessManager>(*settings.observer,
+            binary_directory/"traverse-readiness-agent",(sockets.directory/"s").string(),children.service->id());
+        children.readiness->start();
+    }
+    std::optional<TlsCertificateStatus> checked_certificate;
+    if(children.readiness)checked_certificate=read_tls_certificate_status(certificate_status,children.frontend->id());
     host.stage("sharing", "ready");
     std::cout << "Traverse URL: " << settings.public_url()
               << "\nLocal HTTPS verified. External reachability is not yet verified. "
@@ -691,6 +740,17 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
             break;
         auto certificate =
             certificate_observer.observe(certificate_status, children.frontend->id());
+        if(children.readiness) {
+            auto network=children.readiness_network->poll();
+            if(network.changed || network.healthy!=children.network_observation_healthy)children.readiness->invalidate();
+            children.network_observation_healthy=network.healthy;
+            if(bool(certificate)!=bool(checked_certificate) ||
+               (certificate && checked_certificate &&
+                (certificate->revision!=checked_certificate->revision || certificate->available!=checked_certificate->available ||
+                 certificate->fingerprint!=checked_certificate->fingerprint)))children.readiness->invalidate();
+            checked_certificate=certificate;
+            children.readiness->tick();
+        }
         if (children.certificates) {
             children.certificates->tick();
             if (certificate)

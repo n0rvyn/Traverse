@@ -42,6 +42,13 @@ int main() {
         require(settings.turns_url() == "turns:desktop.example.com:443?transport=tcp" &&
                     settings.display == ":99",
                 "Derived TURN/display mismatch");
+        require(!settings.observer,"Observer silently enabled for existing config");
+        auto observer_config=config;
+        observer_config["observerSettings"]={{"host","Observer.Example.test"},{"port",9443},{"caFile",""},
+            {"registrationId",std::string(32,'a')},{"tokenFile","/private/token"},{"timeoutMs",nullptr}};
+        auto with_observer=EndpointSettings::parse(observer_config);
+        require(with_observer.observer && with_observer.observer->host=="observer.example.test" && with_observer.port==443,
+            "Optional observer changed endpoint defaults");
         auto custom = config;
         custom["port"] = 7443;
         custom["basePath"] = "/traverse/v1.2";

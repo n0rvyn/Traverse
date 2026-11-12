@@ -1,58 +1,69 @@
 #include "common.hpp"
 #include <X11/Xlib.h>
+#include <X11/XKBlib.h>
 #include <X11/extensions/XTest.h>
-#include <X11/keysym.h>
+#include "input_keys.hpp"
 #include <cmath>
 #include <poll.h>
 #include <set>
+#include <functional>
 
-static std::map<std::string, KeySym> key_symbols() {
-    std::map<std::string, KeySym> keys = {{"Space", XK_space},
-                                          {"Enter", XK_Return},
-                                          {"Tab", XK_Tab},
-                                          {"Escape", XK_Escape},
-                                          {"Backspace", XK_BackSpace},
-                                          {"Delete", XK_Delete},
-                                          {"Insert", XK_Insert},
-                                          {"Home", XK_Home},
-                                          {"End", XK_End},
-                                          {"PageUp", XK_Prior},
-                                          {"PageDown", XK_Next},
-                                          {"ArrowLeft", XK_Left},
-                                          {"ArrowRight", XK_Right},
-                                          {"ArrowUp", XK_Up},
-                                          {"ArrowDown", XK_Down},
-                                          {"ShiftLeft", XK_Shift_L},
-                                          {"ShiftRight", XK_Shift_R},
-                                          {"ControlLeft", XK_Control_L},
-                                          {"ControlRight", XK_Control_R},
-                                          {"AltLeft", XK_Alt_L},
-                                          {"AltRight", XK_Alt_R},
-                                          {"MetaLeft", XK_Super_L},
-                                          {"MetaRight", XK_Super_R},
-                                          {"Minus", XK_minus},
-                                          {"Equal", XK_equal},
-                                          {"BracketLeft", XK_bracketleft},
-                                          {"BracketRight", XK_bracketright},
-                                          {"Backslash", XK_backslash},
-                                          {"Semicolon", XK_semicolon},
-                                          {"Quote", XK_apostrophe},
-                                          {"Backquote", XK_grave},
-                                          {"Comma", XK_comma},
-                                          {"Period", XK_period},
-                                          {"Slash", XK_slash}};
-    for (char c = 'A'; c <= 'Z'; c++)
-        keys[std::string("Key") + c] = XK_a + (c - 'A');
-    for (char c = '0'; c <= '9'; c++)
-        keys[std::string("Digit") + c] = XK_0 + (c - '0');
-    for (int n = 1; n <= 12; n++)
-        keys["F" + std::to_string(n)] = XK_F1 + n - 1;
-    return keys;
-}
 class Injector {
     Display *d = nullptr;
-    std::set<KeyCode> keys;
+    std::map<std::string,KeyCode> keys;
     std::set<unsigned int> buttons;
+    std::map<std::string,KeyCode> positions;
+    int xkb_event = 0;
+    bool names_dirty = true;
+
+    static std::string key_name(const char *bytes) {
+        std::string name(bytes,XkbKeyNameLength);
+        while (!name.empty() && name.back()=='\0') name.pop_back();
+        return name;
+    }
+    void refresh_positions() {
+        while (XPending(d)) {
+            XEvent event;
+            XNextEvent(d,&event);
+            if (event.type==xkb_event) {
+                auto *keyboard=reinterpret_cast<XkbEvent *>(&event);
+                if (keyboard->any.xkb_type==XkbNewKeyboardNotify ||
+                    keyboard->any.xkb_type==XkbMapNotify || keyboard->any.xkb_type==XkbNamesNotify)
+                    names_dirty=true;
+            } else if (event.type==MappingNotify) names_dirty=true;
+        }
+        if (!names_dirty) return;
+        struct Drop {void operator()(XkbDescPtr value) const {if (value) XkbFreeKeyboard(value,XkbAllComponentsMask,True);}};
+        std::unique_ptr<XkbDescRec,Drop> keyboard(XkbGetKeyboard(d,XkbAllComponentsMask,XkbUseCoreKbd));
+        if (!keyboard || !keyboard->names || !keyboard->names->keys)
+            throw std::runtime_error("Cannot read host keyboard positions");
+        std::map<std::string,std::set<KeyCode>> named;
+        for (int code=keyboard->min_key_code;code<=keyboard->max_key_code;++code)
+            named[key_name(keyboard->names->keys[code].name)].insert(static_cast<KeyCode>(code));
+        std::multimap<std::string,std::string> aliases;
+        for (int i=0;i<keyboard->names->num_key_aliases;++i) {
+            const auto &alias=keyboard->names->key_aliases[i];
+            aliases.emplace(key_name(alias.alias),key_name(alias.real));
+        }
+        std::map<KeyCode,std::vector<std::string>> by_code;
+        for (const auto &[dom,position]:traverse::physical_keys()) {
+            std::set<KeyCode> candidates;
+            std::set<std::string> visited;
+            std::function<void(const std::string &)> visit=[&](const std::string &name) {
+                if (!visited.insert(name).second) return;
+                auto actual=named.find(name);
+                if (actual!=named.end()) candidates.insert(actual->second.begin(),actual->second.end());
+                auto range=aliases.equal_range(name);
+                for (auto alias=range.first;alias!=range.second;++alias) visit(alias->second);
+            };
+            visit(std::string(position.xkb_name));
+            if (candidates.size()==1 && *candidates.begin()!=0) by_code[*candidates.begin()].push_back(dom);
+        }
+        std::map<std::string,KeyCode> fresh;
+        for (const auto &[code,names]:by_code) if (names.size()==1) fresh.emplace(names.front(),code);
+        positions.swap(fresh);
+        names_dirty=false;
+    }
 
   public:
     explicit Injector(const std::string &name) {
@@ -65,11 +76,21 @@ class Injector {
         } while (Clock::now() < deadline);
         if (!d)
             throw std::runtime_error("Cannot open input display");
-        int a, b, c, e;
-        if (!XTestQueryExtension(d, &a, &b, &c, &e)) {
+        try {
+            int a, b, c, e;
+            if (!XTestQueryExtension(d, &a, &b, &c, &e))
+                throw std::runtime_error("XTest unavailable");
+            int opcode,error,major=XkbMajorVersion,minor=XkbMinorVersion;
+            if (!XkbQueryExtension(d,&opcode,&xkb_event,&error,&major,&minor))
+                throw std::runtime_error("XKB unavailable");
+            unsigned mask=XkbNewKeyboardNotifyMask|XkbMapNotifyMask|XkbNamesNotifyMask;
+            if (!XkbSelectEvents(d,XkbUseCoreKbd,mask,mask))
+                throw std::runtime_error("Host keyboard notifications unavailable");
+            refresh_positions();
+        } catch (...) {
             XCloseDisplay(d);
             d = nullptr;
-            throw std::runtime_error("XTest unavailable");
+            throw;
         }
     }
     ~Injector() {
@@ -79,7 +100,7 @@ class Injector {
         }
     }
     void release() {
-        for (auto key : keys)
+        for (const auto &[_,key] : keys)
             XTestFakeKeyEvent(d, key, False, CurrentTime);
         for (auto button : buttons)
             XTestFakeButtonEvent(d, button, False, CurrentTime);
@@ -105,24 +126,33 @@ class Injector {
                                  static_cast<int>(std::lround(x * (width - 1))),
                                  static_cast<int>(std::lround(y * (height - 1))), CurrentTime);
         } else if (type == "key") {
-            static const auto symbols = key_symbols();
             auto name = e.at("code").get<std::string>();
-            if (!symbols.count(name) || !e.at("down").is_boolean())
+            if (!traverse::physical_key(name) || !e.at("down").is_boolean())
                 throw std::runtime_error("Unsupported key");
-            KeyCode code = XKeysymToKeycode(d, symbols.at(name));
-            if (!code)
-                throw std::runtime_error("Key absent from layout");
             if (e.at("down").get<bool>()) {
-                if (!keys.count(code)) {
+                if (!keys.count(name)) {
                     char state[32];
+                    // This existing ownership roundtrip also receives pending
+                    // XKB notifications before resolving a new physical press.
                     XQueryKeymap(d, state);
+                    refresh_positions();
+                    auto position=positions.find(name);
+                    if (position==positions.end()) throw std::runtime_error("Key absent from layout");
+                    KeyCode code=position->second;
                     if (!(state[code / 8] & (1 << (code % 8)))) {
                         XTestFakeKeyEvent(d, code, True, CurrentTime);
-                        keys.insert(code);
+                        keys.emplace(name,code);
                     }
                 }
-            } else if (keys.erase(code))
-                XTestFakeKeyEvent(d, code, False, CurrentTime);
+            } else {
+                // A release belongs to the admitted press, even if its name
+                // vanished or moved in the current keyboard map.
+                auto held=keys.find(name);
+                if (held!=keys.end()) {
+                    XTestFakeKeyEvent(d,held->second,False,CurrentTime);
+                    keys.erase(held);
+                }
+            }
         } else if (type == "button") {
             if (!e.at("button").is_number_integer() || !e.at("down").is_boolean())
                 throw std::runtime_error("Invalid button");

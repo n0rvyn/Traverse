@@ -1,0 +1,13 @@
+--- a/gst/unixfd/gstunixfdsink.c
++++ b/gst/unixfd/gstunixfdsink.c
+@@ -503,8 +503,8 @@
+   GstClockTime base_time = gst_element_get_base_time (GST_ELEMENT_CAST (self));
+   GstClockTimeDiff clock_diff = 0;
+   if (!self->uses_monotonic_clock) {
+-    clock_diff = GST_CLOCK_DIFF (g_get_monotonic_time () * GST_USECOND,
+-        gst_clock_get_time (GST_ELEMENT_CLOCK (self)));
++    clock_diff = GST_CLOCK_DIFF (gst_clock_get_time (GST_ELEMENT_CLOCK (self)),
++        g_get_monotonic_time () * GST_USECOND);
+   }
+ 
+   NewBufferPayload *new_buffer = (NewBufferPayload *) self->payload->data;

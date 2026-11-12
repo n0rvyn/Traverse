@@ -54,6 +54,18 @@
         "examples",
         "man"
       ]
+    },
+    {
+      "name": "libei",
+      "version": "1.5.0",
+      "url": "https://deb.debian.org/debian/pool/main/libe/libei/libei_1.5.0.orig.tar.bz2",
+      "sha256": "da1fba92daccd0667bc46c3ee952d4ae8cfc6bdb4c0bb4d34df26528fb240618"
+    },
+    {
+      "name": "pipewire",
+      "version": "1.6.0",
+      "url": "https://github.com/PipeWire/pipewire/archive/refs/tags/1.6.0.tar.gz",
+      "sha256": "eef582901d8323669560dd32e3b76b1b15011d73a38f0035a3f11b933112f397"
     }
   ],
   "runtime_executables": [
@@ -62,7 +74,11 @@
     "turnserver",
     "traverse-tls-frontend",
     "traverse-bind-helper",
-    "traverse-issuer"
+    "traverse-issuer",
+    "traverse-wayland-guardian",
+    "traverse-readiness-verifier",
+    "traverse-readiness-observer",
+    "traverse-readiness-agent"
   ],
   "host_dependencies": [
     "Linux glibc >= 2.35",
@@ -72,6 +88,7 @@
   "plugins": [
     "ximagesrc",
     "videoconvert",
+    "videorate",
     "unixfdsink",
     "unixfdsrc",
     "vp8enc",
@@ -82,7 +99,8 @@
     "nicesrc",
     "dtlsenc",
     "srtpenc",
-    "sctpenc"
+    "sctpenc",
+    "pipewiresrc"
   ],
   "dynamic_provider_packages": [
     {
@@ -144,5 +162,43 @@
       "sum": "h1:oKHx3lgN4e5Nno2LKTMrVx+b+NkDptkO9aDireiBDGE=",
       "goModSum": "h1:KtYhQ4YTjT5MtoCZ6RTCXlbrrz6cKyXROCuTpIUDJFY="
     }
+  },
+  "pipewireCaptureProvider": {
+    "version": "1.6.0",
+    "assets": [
+      "share/pipewire/client.conf",
+      "lib/pipewire-0.3/libpipewire-module-rt.so",
+      "lib/pipewire-0.3/libpipewire-module-protocol-native.so",
+      "lib/pipewire-0.3/libpipewire-module-client-node.so",
+      "lib/pipewire-0.3/libpipewire-module-client-device.so",
+      "lib/pipewire-0.3/libpipewire-module-adapter.so",
+      "lib/pipewire-0.3/libpipewire-module-metadata.so",
+      "lib/pipewire-0.3/libpipewire-module-session-manager.so",
+      "lib/spa-0.2/support/libspa-support.so",
+      "lib/spa-0.2/support/libspa-dbus.so",
+      "lib/spa-0.2/audioconvert/libspa-audioconvert.so",
+      "lib/spa-0.2/videoconvert/libspa-videoconvert.so"
+    ]
+  },
+  "hostUi": {
+    "executable": "libexec/traverse/traverse-host",
+    "entry": "bin/traverse-host",
+    "minimumQt": "6.2.4",
+    "minimumOpenSSL": "3.0.0",
+    "libraryPolicy": "distribution-owned; excluded from private media closure",
+    "platformPackages": {
+      "deb": [
+        "qt6-qpa-plugins (>= 6.2.4)",
+        "qt6-wayland (>= 6.2.4)"
+      ],
+      "rpm": [
+        "qt6-qtbase-gui >= 6.2.4",
+        "qt6-qtwayland >= 6.2.4"
+      ]
+    },
+    "gentooRuntimeAtoms": [
+      ">=dev-qt/qtbase-6.2.4:6[gui,widgets,X]",
+      ">=dev-qt/qtwayland-6.2.4:6"
+    ]
   }
 }

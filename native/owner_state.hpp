@@ -70,6 +70,9 @@ class OwnerStateListener {
     httplib::Server server;
     std::thread listener;
     std::atomic<bool> listener_failed{false};
+    std::mutex startup_mutex;
+    std::condition_variable startup_changed;
+    bool entered = false, exited = false;
 
     void remove_owned() noexcept {
         struct stat current{};
@@ -111,12 +114,26 @@ class OwnerStateListener {
                 after.st_uid != geteuid() || (after.st_mode & 0777) != 0700 ||
                 chmod(path.c_str(), 0600))
                 throw std::runtime_error("Private owner state directory changed");
+            server.set_start_handler([this] {
+                std::lock_guard lock(startup_mutex);
+                entered = true;
+                startup_changed.notify_all();
+            });
             listener = std::thread([this] {
                 if (!server.listen_after_bind())
                     listener_failed = true;
+                std::lock_guard lock(startup_mutex);
+                exited = true;
+                startup_changed.notify_all();
             });
+            // stop() cannot close a bound socket until listen_after_bind()
+            // has entered. Do not expose a partially started listener.
+            std::unique_lock lock(startup_mutex);
+            startup_changed.wait(lock, [this] { return entered || exited; });
         } catch (...) {
             server.stop();
+            if (listener.joinable())
+                listener.join();
             remove_owned();
             throw;
         }

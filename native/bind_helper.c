@@ -130,6 +130,11 @@ int main(int argc, char **argv) {
     value("GST_PLUGIN_PATH_1_0", "");
     private_path("GST_PLUGIN_SCANNER", prefix, "/libexec/gstreamer-1.0/gst-plugin-scanner");
     private_path("GST_PLUGIN_SCANNER_1_0", prefix, "/libexec/gstreamer-1.0/gst-plugin-scanner");
+    private_path("PIPEWIRE_MODULE_DIR", prefix, "/lib/pipewire-0.3");
+    private_path("SPA_PLUGIN_DIR", prefix, "/lib/spa-0.2");
+    private_path("PIPEWIRE_CONFIG_DIR", prefix, "/share/pipewire");
+    value("PIPEWIRE_CONFIG_PREFIX", "");
+    value("PIPEWIRE_CONFIG_NAME", "client.conf");
     value("GST_REGISTRY", registry);
     value("GST_REGISTRY_1_0", registry);
     value("GST_REGISTRY_UPDATE", "no");

@@ -1,0 +1,12 @@
+--- a/src/libeis-device.c
++++ b/src/libeis-device.c
+@@ -1408,7 +1408,8 @@ eis_device_pause(struct eis_device *device)
+ {
+ 	struct eis_client *client = eis_device_get_client(device);
+ 
+-	if (device->state != EIS_DEVICE_STATE_RESUMED)
++	if (device->state != EIS_DEVICE_STATE_RESUMED &&
++	    device->state != EIS_DEVICE_STATE_EMULATING)
+ 		return;
+ 
+ 	device->state = EIS_DEVICE_STATE_PAUSED;

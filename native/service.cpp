@@ -1,9 +1,24 @@
 #include "common.hpp"
 #include "endpoint_settings.hpp"
 #include "owner_state.hpp"
+#include "readiness_challenge.hpp"
+#include <initializer_list>
 #include <arpa/inet.h>
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
+
+static bool readiness_request(const json &body,std::initializer_list<const char *> fields) {
+    if(!body.is_object() || body.size()!=fields.size()+1)return false;
+    auto schema=body.find("schemaVersion");
+    if(schema==body.end() || !schema->is_number_integer() || *schema!=1)return false;
+    for(const auto *field:fields)
+        if(!body.contains(field) || !body[field].is_string() || body[field].get_ref<const std::string &>().empty())return false;
+    return true;
+}
+static json readiness_receipt(const traverse::ReadinessChallenge::Receipt &value) {
+    return {{"instance",value.instance},{"id",value.id},{"nonce",value.nonce},
+            {"observedMonotonicMs",value.observed_monotonic_ms}};
+}
 
 // This is operator configuration, never supplied by an unpaired HTTP caller.
 static json client_ice_config(const std::string &path, const std::string &stun) {
@@ -493,6 +508,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
 class Service {
     std::mutex state_mutex, operation_mutex;
     Ipc ipc;
+    traverse::ReadinessChallenge readiness;
     std::string token, origin, stun, web_root, base_path;
     int udp_port, bitrate;
     bool udp_only;
@@ -529,6 +545,77 @@ class Service {
         }
     }
     void owner_routes(httplib::Server &owner) {
+        auto send=[](httplib::Response &response,json value,int status=200) {
+            value.update({{"schemaVersion",1},{"pid",getpid()},
+                {"observedMonotonicMs",std::chrono::duration_cast<std::chrono::milliseconds>(
+                    Clock::now().time_since_epoch()).count()}});
+            reply(response,value,status);
+        };
+        owner.Post("/readiness/begin",[this,send](const httplib::Request &request,httplib::Response &response) {
+            try {
+                if(!readiness_request(parse_body(request),{})) {
+                    send(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                auto lease=readiness.begin();
+                send(response,{{"ok",true},{"lease",{{"instance",lease.instance},{"id",lease.id},
+                    {"token",lease.token},{"nonce",lease.nonce}}}});
+            } catch(const json::exception &) { send(response,{{"error","Invalid readiness request"}},400); }
+              catch(const std::exception &) { send(response,{{"error","Readiness unavailable"}},503); }
+        });
+        owner.Post("/readiness/reserve",[this,send](const httplib::Request &request,httplib::Response &response) {
+            try {
+                auto body=parse_body(request);
+                if(!readiness_request(body,{"id"}) || !traverse::ReadinessChallenge::valid_id(body["id"].get<std::string>())) {
+                    send(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                auto lease=readiness.reserve(body["id"].get<std::string>());
+                if(!lease){send(response,{{"error","Readiness reservation unavailable"}},409);return;}
+                send(response,{{"ok",true},{"lease",{{"instance",lease->instance},{"id",lease->id},
+                    {"token",lease->token},{"nonce",lease->nonce}}}});
+            } catch(const json::exception &) {send(response,{{"error","Invalid readiness request"}},400);}
+              catch(const std::exception &) {send(response,{{"error","Readiness unavailable"}},503);}
+        });
+        owner.Post("/readiness/cancel",[this,send](const httplib::Request &request,httplib::Response &response) {
+            try {
+                auto body=parse_body(request);
+                if(!readiness_request(body,{"id"}) || !traverse::ReadinessChallenge::valid_id(body["id"].get<std::string>())) {
+                    send(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                if(!readiness.cancel_reserved(body["id"].get<std::string>())) {
+                    send(response,{{"error","Readiness reservation unavailable"}},409);return;
+                }
+                send(response,{{"ok",true}});
+            } catch(const json::exception &) {send(response,{{"error","Invalid readiness request"}},400);}
+              catch(const std::exception &) {send(response,{{"error","Readiness unavailable"}},503);}
+        });
+        owner.Post("/readiness/inspect",[this,send](const httplib::Request &request,httplib::Response &response) {
+            try {
+                auto body=parse_body(request);
+                if(!readiness_request(body,{"id"})) {
+                    send(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                auto state=readiness.inspect(body["id"].get<std::string>());
+                if(!state) { send(response,{{"error","Readiness lease unavailable"}},404);return; }
+                json probe={{"instance",state->instance},{"id",state->id},
+                    {"state",state->receipt?"observed":"issued"}};
+                if(state->receipt)probe["receipt"]=readiness_receipt(*state->receipt);
+                send(response,{{"ok",true},{"probe",probe}});
+            } catch(const json::exception &) { send(response,{{"error","Invalid readiness request"}},400); }
+              catch(const std::exception &) { send(response,{{"error","Readiness unavailable"}},503); }
+        });
+        owner.Post("/readiness/end",[this,send](const httplib::Request &request,httplib::Response &response) {
+            try {
+                auto body=parse_body(request);
+                if(!readiness_request(body,{"id"})) {
+                    send(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                if(!readiness.end(body["id"].get<std::string>())) {
+                    send(response,{{"error","Readiness lease unavailable"}},404);return;
+                }
+                send(response,{{"ok",true}});
+            } catch(const json::exception &) { send(response,{{"error","Invalid readiness request"}},400); }
+              catch(const std::exception &) { send(response,{{"error","Readiness unavailable"}},503); }
+        });
         owner.Get("/state", [this](const httplib::Request &, httplib::Response &response) {
             std::shared_ptr<Peer> current;
             {
@@ -599,6 +686,25 @@ class Service {
                                                                 : "text/css");
             });
         }
+        // Only a private-owner-issued one-use lease can reach this route.
+        // It never takes operation_mutex, leases the controller or builds Peer.
+        server.Post(route("api/readiness/challenge"),[this](const httplib::Request &request,httplib::Response &response) {
+            try {
+                auto token=bearer(request);
+                if(!readiness.valid_token(token)) {
+                    reply(response,{{"error","Readiness lease unavailable"}},403);return;
+                }
+                auto body=parse_body(request);
+                if(!readiness_request(body,{"id","nonce"})) {
+                    reply(response,{{"error","Invalid readiness request"}},400);return;
+                }
+                auto receipt=readiness.consume(body["id"].get<std::string>(),token,
+                    body["nonce"].get<std::string>());
+                if(!receipt) { reply(response,{{"error","Readiness lease unavailable"}},403);return; }
+                reply(response,{{"schemaVersion",1},{"receipt",readiness_receipt(*receipt)}});
+            } catch(const json::exception &) { reply(response,{{"error","Invalid readiness request"}},400); }
+              catch(const std::exception &) { reply(response,{{"error","Readiness unavailable"}},503); }
+        });
         server.Post(route("api/pair"), [this](const httplib::Request &r, httplib::Response &s) {
             std::lock_guard op(operation_mutex);
             try {

@@ -1,0 +1,55 @@
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -1026,7 +1026,7 @@
+     GST_DEBUG_OBJECT (this, "waiting for started signal, state now %s",
+         pw_stream_state_as_string (state));
+ 
+-    if (state == PW_STREAM_STATE_ERROR ||
++    if (state == PW_STREAM_STATE_ERROR || this->stream->core->last_error < 0 ||
+         (state == PW_STREAM_STATE_UNCONNECTED && prev_state > PW_STREAM_STATE_UNCONNECTED && !restart) ||
+         this->flushing) {
+       state = PW_STREAM_STATE_ERROR;
+@@ -1071,8 +1071,10 @@
+     state = pw_stream_get_state (this->stream->pwstream, &error);
+ 
+     GST_DEBUG_OBJECT (this, "waiting for NEGOTIATED, now %s", pw_stream_state_as_string (state));
+-    if (state == PW_STREAM_STATE_ERROR)
+-      break;
++    if (state == PW_STREAM_STATE_ERROR || this->stream->core->last_error < 0) {
++      state = PW_STREAM_STATE_ERROR;
++      break;
++    }
+     if (this->flushing) {
+       state = PW_STREAM_STATE_ERROR;
+       break;
+@@ -1166,7 +1168,7 @@
+       if (state == PW_STREAM_STATE_UNCONNECTED)
+         break;
+ 
+-      if (state == PW_STREAM_STATE_ERROR || pwsrc->flushing)
++      if (state == PW_STREAM_STATE_ERROR || pwsrc->stream->core->last_error < 0 || pwsrc->flushing)
+         goto connect_error;
+ 
+       pw_thread_loop_wait (pwsrc->stream->core->loop);
+@@ -1570,6 +1572,9 @@
+     if (pwsrc->stream == NULL)
+       goto streaming_error;
+ 
++    if (pwsrc->stream->core->last_error < 0)
++      goto streaming_error;
++
+     state = pw_stream_get_state (pwsrc->stream->pwstream, &error);
+     if (state == PW_STREAM_STATE_ERROR)
+       goto streaming_error;
+@@ -1751,8 +1756,10 @@
+        * be moved from idle to suspended, which would mean format cleared via
+        * handle_format_change. Wait for new format to avoid basesrc calling
+        * create() and get not-negotiated error as response. */
+-      if (wait_negotiated(this) == PW_STREAM_STATE_ERROR)
++      if (wait_negotiated(this) == PW_STREAM_STATE_ERROR) {
++        pw_thread_loop_unlock (this->stream->core->loop);
+         goto open_failed;
++      }
+       pw_thread_loop_unlock (this->stream->core->loop);
+       break;
+     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:

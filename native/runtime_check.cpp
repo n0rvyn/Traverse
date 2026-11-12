@@ -1,3 +1,4 @@
+#include "runtime_factories.hpp"
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -133,7 +134,7 @@ static bool bundled_assets(json &result) {
         auto path = std::filesystem::path(entry.get<std::string>());
         if (path.is_absolute() || path.string().find("..") != std::string::npos ||
             !std::filesystem::is_regular_file(std::filesystem::path(prefix) / path)) {
-            result["error"] = "Private crypto provider asset is missing: " + path.string();
+            result["error"] = "Private runtime provider asset is missing: " + path.string();
             return false;
         }
     }
@@ -229,10 +230,7 @@ int main(int argc, char **argv) {
         gst_init(&argc, &argv);
         result["gstreamer"] = gst_version_string();
         bool ok = true;
-        for (const char *name :
-             {"ximagesrc", "videoconvert", "unixfdsink", "unixfdsrc", "vp8enc", "rtpvp8pay",
-              "rtprtxsend", "rtprtxreceive", "webrtcbin", "nicesrc", "dtlsenc", "srtpenc",
-              "sctpenc"}) {
+        for (const char *name : traverse::required_runtime_factories) {
             auto *factory = gst_element_factory_find(name);
             result["plugins"][name] = factory != nullptr;
             ok = ok && factory;
