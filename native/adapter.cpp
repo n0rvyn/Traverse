@@ -465,7 +465,7 @@ int main(int argc, char **argv) {
             if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != parent)
                 return 1;
             execlp("xmessage", "xmessage", "-display", name.c_str(), "-title", "Traverse sharing",
-                   "-buttons", "Stop sharing:0", "-default", "Stop sharing", "-geometry", "+850+20",
+                   "-buttons", "Stop sharing:0", "-default", "Stop sharing",
                    "-file", "-", static_cast<char *>(nullptr));
             throw std::runtime_error("Cannot execute local sharing dialog");
         }
