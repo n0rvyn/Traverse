@@ -7,6 +7,7 @@ import contextlib
 import json
 import math
 import os
+from pathlib import Path
 import queue
 import signal
 import socket
@@ -30,6 +31,26 @@ signal.signal(signal.SIGTERM, interrupted)
 def configuration():
     return {"devices": [{"caps": ["absolute", "button", "scroll", "keyboard"], "regions": [
         {"width": 640, "height": 360, "x": 100, "y": 200, "scale": 2.0, "id": "controlled-monitor"}]}]}
+
+
+def socket_diagnostic(endpoint, sender, provider):
+    owners=[];unreadable=[];pollers={}
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():continue
+        try:
+            descriptors=list((process/'fd').iterdir())
+            for descriptor in descriptors:
+                try:target=os.readlink(descriptor)
+                except FileNotFoundError:continue
+                if target==endpoint:
+                    owners.append({'pid':int(process.name),'fd':descriptor.name,
+                        'name':(process/'comm').read_text().strip()})
+                if int(process.name)==provider.pid and target=='anon_inode:[eventpoll]':
+                    pollers[descriptor.name]=(process/'fdinfo'/descriptor.name).read_text()
+        except FileNotFoundError:continue
+        except PermissionError:unreadable.append(int(process.name))
+    return {'clientEndpoint':endpoint,'matchingOwners':owners,'unreadablePids':unreadable,
+        'senderExit':sender.poll(),'providerExit':provider.poll(),'providerPollers':pollers}
 
 
 class Records:
@@ -88,6 +109,7 @@ class EisInput(portal.PortalCapabilities):
             entry = cls.sessions.get(args[0])
             valid = entry and entry["sender"] == sender and entry.get("started") and cls.wire_fd >= 0
             fd = cls.wire_fd
+            if valid:cls.wire_endpoint=os.readlink("/proc/self/fd/"+str(fd))
             cls.wire_fd = -1
         if not valid:
             invocation.return_dbus_error("org.freedesktop.portal.Error.Failed", "Invalid test EIS grant")
@@ -102,6 +124,7 @@ class EisInput(portal.PortalCapabilities):
         super().setUp()
         type(self).wire_properties = {}
         type(self).wire_fd = -1
+        type(self).wire_endpoint = None
 
     @contextlib.contextmanager
     def client(self, config=None, properties=None, probe_args=()):
@@ -240,7 +263,10 @@ class EisInput(portal.PortalCapabilities):
             self.send(child,expected=False,kind="key",code=42,down=True)
             self.send(child,expected=False,kind="button",code=273,down=False)
             self.assertEqual(self.command(child,"stop")["state"],"stopped")
-            records.wait(lambda row: row.get("event") == "disconnect")
+            try:records.wait(lambda row: row.get("event") == "disconnect")
+            except AssertionError as failure:
+                diagnostic=socket_diagnostic(type(self).wire_endpoint,child,records.child)
+                raise AssertionError(str(failure)+"; socket state: "+json.dumps(diagnostic,sort_keys=True)) from failure
             rows=records.snapshot()
             self.assertEqual([row["down"] for row in rows if row.get("event") == "key"],[True,False])
             self.assertEqual([row["down"] for row in rows if row.get("event") == "button"],[True,False])
