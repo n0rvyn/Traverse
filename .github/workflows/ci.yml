@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
-      - run: bash -n packaging/build-runtime.sh packaging/test-deb.sh packaging/test-rpm.sh packaging/test-host-owner.sh packaging/test-host-chrome.sh
+      - run: bash -n packaging/build-runtime.sh packaging/test-deb.sh packaging/test-rpm.sh packaging/test-host-owner.sh packaging/test-host-chrome.sh packaging/test-gentoo-host.sh
       - run: sh -n packaging/runtime-entry.sh packaging/host-entry.sh packaging/configure-runtime.sh packaging/deb-postinst.sh packaging/deb-postrm.sh
   packages:
     needs: source
