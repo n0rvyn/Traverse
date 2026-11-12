@@ -34,6 +34,56 @@ printf 'nameserver 127.0.0.1\n' > /etc/resolv.conf
 mount -t tmpfs -o mode=1777 tmpfs /tmp
 mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 mount -t tmpfs -o mode=0755 tmpfs /var/log
+# Hosted images make /opt writable by other users. Check that the installed
+# helper rejects that ancestry, then give this namespace a trusted /opt parent.
+# Existing toolchains and Chrome keep their paths through read-only bindings.
+/usr/bin/python3 - <<'ANCESTRY'
+import hashlib,json,os,stat,subprocess
+from pathlib import Path
+parent=Path('/opt').stat()
+unsafe=parent.st_uid!=0 or bool(stat.S_IMODE(parent.st_mode)&0o022)
+print(json.dumps({'bindingParentBefore':{'uid':parent.st_uid,'mode':oct(stat.S_IMODE(parent.st_mode)),'unsafe':unsafe}}),flush=True)
+if unsafe:
+    result=subprocess.run(['/opt/traverse/libexec/traverse/traverse-bind-helper','service',
+        '--supervisor-pid',str(os.getpid())],user=65534,group=65534,extra_groups=[],
+        stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+    expected=b'Traverse binding helper: Installation must be root-owned and not writable by other users\n'
+    assert result.returncode==1 and result.stderr==expected,('Unexpected fixed helper probe',result.returncode,hashlib.sha256(result.stderr).hexdigest())
+    print(json.dumps({'unsafeInstallParentRejected':True}),flush=True)
+ANCESTRY
+mkdir /run/traverse-original-opt
+mount --bind /opt /run/traverse-original-opt
+mount -o remount,bind,ro /run/traverse-original-opt
+mount -t tmpfs -o mode=0755 tmpfs /opt
+/usr/bin/python3 - <<'PRIVATE_OPT'
+import os,subprocess
+from pathlib import Path
+for source in Path('/run/traverse-original-opt').iterdir():
+    target=Path('/opt')/source.name
+    if source.is_symlink():
+        target.symlink_to(os.readlink(source))
+        continue
+    if source.is_dir():target.mkdir()
+    else:
+        assert source.is_file(),'Unexpected /opt entry type'
+        target.touch()
+    subprocess.run(['mount','--bind',str(source),str(target)],check=True)
+    subprocess.run(['mount','-o','remount,bind,ro',str(target)],check=True)
+PRIVATE_OPT
+/usr/bin/python3 - <<'TRUSTED_ANCESTRY'
+import hashlib,json,os,stat,subprocess
+from pathlib import Path
+parent=Path('/opt').stat()
+assert parent.st_uid==0 and stat.S_IMODE(parent.st_mode)==0o755
+# No owner configuration, grant, credential or listener is supplied. This
+# fixed missing-arguments response proves the validated service role executed.
+result=subprocess.run(['/opt/traverse/libexec/traverse/traverse-bind-helper','service',
+    '--supervisor-pid',str(os.getpid())],user=65534,group=65534,extra_groups=[],
+    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+expected=b'Service: Required: --cert FILE --key FILE --origin https://HOST:PORT\n'
+assert result.returncode==1 and result.stderr==expected,('Unexpected fixed service probe',result.returncode,hashlib.sha256(result.stderr).hexdigest())
+print(json.dumps({'trustedInstallParentValidated':True,'fixedServiceRoleExecuted':True}),flush=True)
+TRUSTED_ANCESTRY
 # Give the unprivileged diagnostic broker a read-only source path independent
 # of the runner account's home-directory permissions.
 mkdir /run/traverse-test-source
