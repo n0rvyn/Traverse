@@ -2,7 +2,7 @@
 
 Development builds are available from the successful [CI runs](https://github.com/n0rvyn/Traverse/actions/workflows/ci.yml). Choose the artifact for `x86_64` or `aarch64`; check `SHA256SUMS` before installation. No stable release has been published.
 
-The [verified development build](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) includes the native `traverse-host` entry on x86_64 and arm64. It uses system Qt6.2.4+ and OpenSSL3; no Python, compiler or Go installation is needed to run it. Installed DEB/RPM and portable lifecycle checks passed on both architectures. The complete ordinary Chrome journey passed on an isolated x86_64 X11 display. Normal GNOME/KDE Wayland integration, Gentoo system-Qt host-window acceptance and physical-hardware latency remain open.
+The [verified development build](https://github.com/n0rvyn/Traverse/actions/runs/43306397479) includes the native `traverse-host` entry on x86_64 and arm64. It uses system Qt6.2.4+ and OpenSSL3; no Python, compiler or Go installation is needed to run it. Installed DEB/RPM and portable lifecycle checks passed on both architectures. The complete ordinary Chrome journey passed on isolated x86_64 X11 displays in Ubuntu and Gentoo userlands, including Gentoo system Qt6.11.3 and Chrome157. Normal GNOME/KDE Wayland integration and physical-hardware latency remain open.
 
 ## Install and start sharing
 

@@ -12,7 +12,7 @@ The runtime is native. Python is used only for development and test tooling. FD-
 
 ## Packages and CI
 
-[CI run 43248280700](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) verified native host DEB/RPM/portable builds and installed X11 lifecycle on x86_64 and arm64, plus an ordinary Chrome setup/export/trust/video/control/Settings/Stop/relaunch journey on x86_64. GNOME/KDE Wayland integration and physical-hardware acceptance remain open. See the [verified matrix](docs/compatibility.md) and [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
+[CI run 43306397479](https://github.com/n0rvyn/Traverse/actions/runs/43306397479) verified native host DEB/RPM/portable builds and installed X11 lifecycle on x86_64 and arm64, plus an ordinary Chrome setup/export/trust/video/control/Settings/Stop/relaunch journey on x86_64 in Ubuntu and Gentoo userlands. GNOME/KDE Wayland integration and physical-hardware acceptance remain open. See the [verified matrix](docs/compatibility.md) and [package build details](packaging/README.md). Branches: `dev` for daily work, `main` for reviewed milestones. No stable version tag has been published yet.
 
 ## Build from source
 
