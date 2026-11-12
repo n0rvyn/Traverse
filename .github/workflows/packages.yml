@@ -23,6 +23,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.source-ref || github.sha }}
+      - name: Check Gentoo binary dependency resolution
+        if: matrix.arch == 'x86_64'
+        run: sudo bash packaging/test-gentoo-host.sh --preflight
       - name: Build on the declared glibc baseline
         id: build
         run: |

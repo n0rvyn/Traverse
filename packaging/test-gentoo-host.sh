@@ -3,6 +3,8 @@
 set -euo pipefail
 test "$(id -u)" -eq 0
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+preflight=0
+if test "${1:-}" = --preflight; then preflight=1; else test "$#" -eq 0; fi
 evidence="$source_root/.work/gentoo-chrome"
 mkdir -p "$evidence"
 trial=$(mktemp -d "${RUNNER_TEMP:-/tmp}/traverse-gentoo-XXXXXXXX")
@@ -18,22 +20,28 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 commit=$(git -C "$source_root" rev-parse HEAD)
-(cd "$source_root/dist" && sha256sum -c SHA256SUMS)
-archives=("$source_root"/dist/traverse-*-x86_64.tar.gz)
-test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
+if test "$preflight" -eq 0; then
+    (cd "$source_root/dist" && sha256sum -c SHA256SUMS)
+    archives=("$source_root"/dist/traverse-*-x86_64.tar.gz)
+    test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
+fi
 timeout --signal=TERM --kill-after=15s 300s docker pull "$stage_image"
 timeout --signal=TERM --kill-after=15s 300s docker pull "$repository_image"
 docker create --name "$repository_name" "$repository_image" >/dev/null
-docker create --name "$name" "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
+docker create --name "$name" -e TRAVERSE_TEST_PREFLIGHT="$preflight" "$stage_image" /bin/bash /tmp/prepare.sh >/dev/null
 docker cp "$repository_name:/var/db/repos/gentoo" - | docker cp - "$name:/var/db/repos/"
 cat > "$trial/prepare.sh" <<'PREPARE'
 set -euo pipefail
 mkdir -p /etc/portage/package.use /etc/portage/package.license
 # Package policy applies only to this disposable Chrome test installation.
 printf 'www-client/google-chrome google-chrome\n' > /etc/portage/package.license/traverse-test
-printf 'x11-base/xorg-server xvfb\ndev-libs/nss utils\n' > /etc/portage/package.use/traverse-test
+printf 'dev-qt/qtbase X gui widgets\nx11-base/xorg-server xvfb\ndev-libs/nss utils\n' > /etc/portage/package.use/traverse-test
 # Runtime Qt must come from the signed binhost, never an unnoticed local build.
-emerge --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=n dev-qt/qtbase:6
+if test "$TRAVERSE_TEST_PREFLIGHT" -eq 1; then
+    emerge --pretend --verbose --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets]'
+    exit 0
+fi
+emerge --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets]'
 # Xvfb and browser observers are test prerequisites. Portage can build these
 # when a matching binary is absent; package logs and installed USE are retained.
 emerge --nospinner --getbinpkg --jobs=2 --load-average=2 \
@@ -48,6 +56,7 @@ docker cp "$trial/prepare.sh" "$name:/tmp/prepare.sh"
 # A timeout reaches the EXIT trap, which stops only our named containers.
 timeout --signal=TERM --kill-after=15s 3600s docker start --attach "$name"
 test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" -eq 0
+if test "$preflight" -eq 1; then exit 0; fi
 docker export --output "$trial/rootfs.tar" "$name"
 mkdir "$trial/root"
 python3 - "$trial/rootfs.tar" "$trial/root" <<'EXTRACT'
