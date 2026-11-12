@@ -160,6 +160,15 @@ def main():
         except BaseException:
             diagnostic('failure-before-cleanup')
             if pairing_consumed:x11('capture',str(evidence/'failure-after-consumed-pairing.ppm'))
+            elif config.is_file() and os.environ.get('TRAVERSE_TEST_STARTUP_REPLAY')=='1':
+                try:
+                    if process and process.poll() is None:
+                        process.terminate();process.wait(timeout=15)
+                    wait(lambda:not prefix_processes(),'Native startup replay requires completed original cleanup',timeout=12)
+                    from startup_owner_diagnostic import replay
+                    replay(config,env,PREFIX,evidence)
+                except Exception as failure:
+                    (evidence/'startup-owner-diagnostics.json').write_text(json.dumps({'diagnosticError':type(failure).__name__})+'\n')
             raise
         finally:
             if resources:resources.close()

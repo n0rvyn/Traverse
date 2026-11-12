@@ -34,6 +34,11 @@ printf 'nameserver 127.0.0.1\n' > /etc/resolv.conf
 mount -t tmpfs -o mode=1777 tmpfs /tmp
 mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 mount -t tmpfs -o mode=0755 tmpfs /var/log
+# Give the unprivileged diagnostic broker a read-only source path independent
+# of the runner account's home-directory permissions.
+mkdir /run/traverse-test-source
+mount --bind "$root" /run/traverse-test-source
+mount -o remount,bind,ro /run/traverse-test-source
 ip link set lo up
 ip link add traverse-test0 type dummy
 ip addr add 192.0.2.2/24 dev traverse-test0
@@ -44,11 +49,12 @@ mkdir /tmp/host-system-tools
 for tool in readlink dirname basename mkdir uname; do
     ln -s "$(command -v "$tool")" "/tmp/host-system-tools/$tool"
 done
-export PYTHONPATH="$root/tests" TRAVERSE_TEST_HOST_EXECUTABLE=/usr/bin/traverse-host
+export PYTHONPATH=/run/traverse-test-source/tests TRAVERSE_TEST_HOST_EXECUTABLE=/usr/bin/traverse-host
 export TRAVERSE_TEST_HOST_PACKAGED_ENTRY=1 TRAVERSE_TEST_HOST_TOOL_PATH=/tmp/host-system-tools
 export TRAVERSE_TEST_CHROME_INITIAL_PORT=443 TRAVERSE_TEST_RESOURCE_TRACE=1
+export TRAVERSE_TEST_STARTUP_REPLAY=1
 export TRAVERSE_TEST_EVIDENCE="$evidence" QT_SCALE_FACTOR=1 PYTHONDONTWRITEBYTECODE=1
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 "$root/tests/setup_export_chrome.py"
+xvfb-run -a -s '-screen 0 1280x1024x24' python3 /run/traverse-test-source/tests/setup_export_chrome.py
 python3 - "$evidence/fresh-export-summary.json" <<'VERIFY'
 import json,sys
 from pathlib import Path

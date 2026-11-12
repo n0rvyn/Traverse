@@ -54,7 +54,7 @@ def broker(config_path,root_parent):
     backend=subprocess.Popen([str(PREFIX/'libexec/traverse/traverse-launcher'),
         '--config',config_path,'--owner-fd',str(child.fileno()),'--supervisor-pid',str(os.getpid())],
         pass_fds=(child.fileno(),),env=env,stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,stderr=Path(config_path).with_name('native-fixture-stderr.txt').open('w'))
+        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL if os.environ.get('TRAVERSE_TEST_DISCARD_NATIVE_STDERR')=='1' else Path(config_path).with_name('native-fixture-stderr.txt').open('w'))
     inherited=child.fileno();child.close();incoming=bytearray();serial=0;token=None;last_state={};known_code=None
     config=json.loads(Path(config_path).read_text());port=config.get('port',443)
     base=config.get('basePath','/');origin='https://'+DOMAIN+('' if port==443 else ':'+str(port))
