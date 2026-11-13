@@ -20,6 +20,21 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
+
+@contextmanager
+def hosts_file(entries,remove=()):
+    from installed_managed_certificates import require_disposable_environment
+    require_disposable_environment()
+    path=Path('/etc/hosts');original=path.read_bytes()
+    rows=[]
+    for line in original.decode().splitlines():
+        names=line.partition('#')[0].split()[1:]
+        if not any(name.lower().rstrip('.') in remove for name in names):rows.append(line)
+    try:
+        path.write_text('\n'.join(rows)+'\n'+entries+'\n')
+        yield path
+    finally:path.write_bytes(original)
 
 class DNS:
     def __init__(self):
@@ -27,7 +42,7 @@ class DNS:
         require_disposable_environment()
         self.resolver=Path('/etc/resolv.conf');self.original_resolver=self.resolver.read_bytes()
         self.resolver.write_bytes(b'nameserver 127.0.0.1\noptions attempts:1 timeout:5\n')
-        self.records={};self.queries=[];self.lock=threading.Lock();owner=self
+        self.records={};self.queries=[];self.transports=[];self.query_counts={};self.lock=threading.Lock();owner=self
         class UDP(socketserver.BaseRequestHandler):
             def handle(self):
                 data,stream=self.request;answer=owner.answer(data)
@@ -35,14 +50,17 @@ class DNS:
         class TCP(socketserver.BaseRequestHandler):
             def handle(self):
                 stream=self.request;stream.settimeout(3)
-                length=stream.recv(2)
-                if len(length)!=2:return
+                length=b''
+                while len(length)<2:
+                    part=stream.recv(2-len(length))
+                    if not part:return
+                    length+=part
                 count=struct.unpack('!H',length)[0];data=b''
                 while len(data)<count:
                     part=stream.recv(count-len(data))
                     if not part:return
                     data+=part
-                answer=owner.answer(data)
+                answer=owner.answer(data,'tcp')
                 if answer is not None:stream.sendall(struct.pack('!H',len(answer))+answer)
         class UDPServer(socketserver.ThreadingUDPServer):daemon_threads=True;allow_reuse_address=True
         class TCPServer(socketserver.ThreadingTCPServer):daemon_threads=True;allow_reuse_address=True
@@ -54,7 +72,7 @@ class DNS:
                 thread=threading.Thread(target=server.serve_forever);thread.start();self.threads.append(thread)
         except BaseException:
             self.close();raise
-    def answer(self,data):
+    def answer(self,data,transport='udp'):
         if len(data)<12:return None
         offset=12;labels=[]
         while offset<len(data) and data[offset]:
@@ -66,15 +84,29 @@ class DNS:
         kind,category=struct.unpack('!HH',data[offset:offset+4]);name='.'.join(labels).lower()
         with self.lock:
             self.queries.append((name,kind));record=self.records.get(name)
+            self.transports.append((name,kind,transport))
+            key=(name,kind);self.query_counts[key]=self.query_counts.get(key,0)+1
+            attempt=self.query_counts[key]
             values=record.get(kind,[]) if record is not None else None
+        if isinstance(values,dict) and 'afterFirst' in values:
+            values=values['first'] if attempt==1 else values['afterFirst']
         if values=='drop':return None
         code=3 if values is None else 2 if values=='fail' else 0
-        rows=values if isinstance(values,list) else []
-        result=data[:2]+struct.pack('!HHHHH',0x8180|code,1,len(rows),0,0)+data[12:offset+4]
+        mode=values if isinstance(values,dict) else {}
+        if mode.get('truncated') and transport=='udp':
+            return data[:2]+struct.pack('!HHHHH',0x8380,1,0,0,0)+data[12:offset+4]
+        def wire_name(value):return b''.join(bytes([len(label)])+label.encode() for label in value.split('.'))+b'\0'
+        rows=mode.get('addresses',[]) if mode else values if isinstance(values,list) else []
+        records=[]
+        owner_name=mode.get('owner',name)
+        if mode.get('cname'):
+            alias=wire_name(mode['cname']);records.append(b'\xc0\x0c'+struct.pack('!HHIH',5,category,1,len(alias))+alias)
+            owner_name=mode['cname']
         for address in rows:
             raw=socket.inet_pton(socket.AF_INET if kind==1 else socket.AF_INET6,address)
-            result+=b'\xc0\x0c'+struct.pack('!HHIH',kind,category,1,len(raw))+raw
-        return result
+            size=len(raw)+(1 if mode.get('malformed') else 0)
+            records.append(wire_name(owner_name)+struct.pack('!HHIH',kind,category,1,size)+raw)
+        return data[:2]+struct.pack('!HHHHH',0x8180|code,1,len(records),0,0)+data[12:offset+4]+b''.join(records)
     def set(self,name,ipv4=None,ipv6=None):
         with self.lock:self.records[name]={1:[] if ipv4 is None else ipv4,28:[] if ipv6 is None else ipv6}
     def count(self):
@@ -161,9 +193,77 @@ for family in (socket.AF_INET,socket.AF_INET6):
         row=self.resolve(host,['::1','127.0.0.1'],'resolved');self.assertEqual(set(row['addresses']),{'::1','127.0.0.1'})
         self.resolve(host,['127.0.0.1'],'dnsMismatch')
         self.dns.set(host,['127.0.0.1']);self.resolve(host,['127.0.0.1'],'resolved')
-        self.dns.set(host,['127.0.0.1'],'fail');self.resolve(host,['127.0.0.1'],'dnsFailed')
+        self.dns.set(host,['127.0.0.1'],'fail')
+        partial=self.resolve(host,['127.0.0.1'],'resolved')
+        self.assertEqual(partial['resolution']['dns']['a']['status'],'answered')
+        self.assertEqual(partial['resolution']['dns']['aaaa']['status'],'failed')
+        self.dns.set(host,'fail',['::1'])
+        partial=self.resolve(host,['::1'],'resolved')
+        self.assertEqual(partial['resolution']['dns']['a']['status'],'failed')
+        self.assertEqual(partial['resolution']['dns']['aaaa']['status'],'answered')
         self.dns.set(host,[],['::1']);self.resolve(host,['::1'],'resolved')
         self.resolve('absent-observer.example.test',['127.0.0.1'],'dnsFailed')
+    def test_hosts_aliases_work_with_zero_dns_queries(self):
+        host='observer-hosts.example.test';self.dns.set(host,'drop','drop')
+        before=self.dns.count()
+        for entries,addresses in (
+            ('127.0.0.1 canonical.example.test OBSERVER-HOSTS.EXAMPLE.TEST # exact alias', ['127.0.0.1']),
+            ('::1 observer-hosts.example.test', ['::1']),
+            ('127.0.0.1 observer-hosts.example.test\n::1 observer-hosts.example.test', ['127.0.0.1','::1'])):
+            with hosts_file(entries):
+                row=self.resolve(host,addresses,'resolved')
+                self.assertEqual(set(row['addresses']),set(addresses));self.assertEqual(row['resolution']['basis'],'hosts')
+                for family in ('a','aaaa'):self.assertEqual(row['resolution']['dns'][family],dict(status='notChecked',addresses=[]))
+        self.assertEqual(self.dns.count(),before,'Hosts-only lookup contacted DNS')
+    def test_hosts_extra_address_and_changes_are_not_ignored(self):
+        host='observer-hosts-policy.example.test';self.dns.set(host,'drop','drop')
+        with hosts_file('127.0.0.1 '+host+'\n127.0.0.2 '+host):self.resolve(host,['127.0.0.1'],'dnsMismatch')
+        with hosts_file('127.0.0.1 '+host):self.assertEqual(self.resolve(host,['127.0.0.1'],'resolved')['resolution']['basis'],'hosts')
+        with hosts_file('127.0.0.2 '+host):self.resolve(host,['127.0.0.1'],'dnsMismatch')
+    def test_other_nss_names_remain_available_without_dns_records(self):
+        hosts_line=next(line for line in Path('/etc/nsswitch.conf').read_text().splitlines() if line.startswith('hosts:'))
+        if 'myhostname' not in hosts_line.split():self.skipTest('This fixture has no myhostname NSS provider')
+        host=socket.gethostname().lower().rstrip('.');self.dns.set(host,[],[])
+        with hosts_file('',remove=(host,)):
+            addresses=sorted({row[4][0] for row in socket.getaddrinfo(host,None,socket.AF_UNSPEC,socket.SOCK_STREAM)})
+            row=self.resolve(host,addresses,'resolved');self.assertEqual(set(row['addresses']),set(addresses))
+            self.assertEqual(row['resolution']['basis'],'system')
+            for family in ('a','aaaa'):self.assertEqual(row['resolution']['dns'][family]['status'],'absent')
+    def test_suppressed_aaaa_is_not_reported_as_complete_dns(self):
+        libc=ctypes.CDLL(None);libc.gnu_get_libc_version.restype=ctypes.c_char_p
+        version=tuple(map(int,libc.gnu_get_libc_version().decode().split('.')[:2]))
+        if version<(2,36):self.skipTest('This libc predates the no-aaaa resolver option')
+        host='observer-suppressed.example.test';self.dns.set(host,['127.0.0.1'],['::1'])
+        previous=os.environ.get('RES_OPTIONS')
+        try:
+            os.environ['RES_OPTIONS']='no-aaaa'
+            row=self.resolve(host,['127.0.0.1'],'resolved')
+            self.assertEqual(row['resolution']['dns']['aaaa']['status'],'failed')
+        finally:
+            if previous is None:os.environ.pop('RES_OPTIONS',None)
+            else:os.environ['RES_OPTIONS']=previous
+    def test_actual_dns_cname_continuation_and_tcp_fallback(self):
+        host='observer-cname.example.test';alias='observer-alias.example.test'
+        self.dns.set(alias,['127.0.0.1'])
+        self.dns.set(host,dict(first=['127.0.0.1'],afterFirst=dict(cname=alias)))
+        row=self.resolve(host,['127.0.0.1'],'resolved')
+        self.assertEqual(row['resolution']['dns']['a'],dict(status='answered',addresses=['127.0.0.1']))
+        self.assertIn((alias,1),self.dns.queries,'Native resolver never followed CNAME')
+        host='observer-tcp.example.test'
+        self.dns.set(host,dict(first=['127.0.0.1'],afterFirst=dict(truncated=True,addresses=['127.0.0.1'])))
+        row=self.resolve(host,['127.0.0.1'],'resolved')
+        self.assertEqual(row['resolution']['dns']['a']['status'],'answered')
+        self.assertIn((host,1,'tcp'),self.dns.transports,'Truncated UDP answer did not use TCP')
+    def test_actual_dns_malformed_foreign_owner_and_cname_loop_fail(self):
+        for suffix,answer in (
+            ('malformed',dict(malformed=True,addresses=['127.0.0.1'])),
+            ('foreign',dict(owner='unrelated.example.test',addresses=['127.0.0.1'])),
+            ('loop',dict(cname='observer-loop-alias.example.test'))):
+            host='observer-wire-'+suffix+'.example.test'
+            if suffix=='loop':self.dns.set('observer-loop-alias.example.test',dict(cname=host))
+            self.dns.set(host,dict(first=['127.0.0.1'],afterFirst=answer))
+            row=self.resolve(host,['127.0.0.1'],'resolved')
+            self.assertEqual(row['resolution']['dns']['a']['status'],'failed',suffix)
     def test_pending_real_resolver_cancelled(self):
         host='pending-observer.example.test';self.dns.set(host,'drop','drop');before=self.dns.count()
         p=self.worker(host,['127.0.0.1']);wait(lambda:self.dns.count()>before,'Actual native resolver query absent')
@@ -306,8 +406,25 @@ class ObserverTests(unittest.TestCase):
         self.dns.set(TARGET_DOMAIN,['127.0.0.1'],['::1'])
         self.assertEqual(self.api('/v1/resolve',dict(schemaVersion=1))[1]['status'],'dnsMismatch')
         self.dns.set(TARGET_DOMAIN,['127.0.0.1'],'fail')
-        self.assertEqual(self.api('/v1/resolve',dict(schemaVersion=1))[1]['status'],'dnsFailed')
+        partial=self.api('/v1/resolve',dict(schemaVersion=1))[1]
+        self.assertEqual(partial['status'],'resolved')
+        self.assertEqual(partial['resolution']['dns']['aaaa']['status'],'failed')
+        checked=self.api('/v1/check',self.check_body())[1]
+        self.assertEqual(checked['status'],'received')
+        self.assertEqual(checked['resolution'],partial['resolution'])
         self.assertEqual(self.child_pids(),[])
+    def test_hosts_backed_receipt_needs_no_dns_and_rechecks_changes(self):
+        self.dns.set(TARGET_DOMAIN,'drop','drop');before=self.dns.count()
+        with hosts_file('127.0.0.1 canonical.example.test '+TARGET_DOMAIN):
+            resolved=self.api('/v1/resolve',dict(schemaVersion=1))[1]
+            self.assertEqual(resolved['status'],'resolved');self.assertEqual(resolved['resolution']['basis'],'hosts')
+            checked=self.api('/v1/check',self.check_body())[1]
+            self.assertEqual(checked['status'],'received');self.assertEqual(checked['resolution'],resolved['resolution'])
+        self.assertEqual(self.dns.count(),before,'Hosts-backed HTTPS contacted DNS')
+        contacts=len(self.target.observed)
+        with hosts_file('127.0.0.2 '+TARGET_DOMAIN):
+            self.assertEqual(self.api('/v1/check',self.check_body())[1]['status'],'dnsMismatch')
+        self.assertEqual(len(self.target.observed),contacts,'Changed hosts contacted an unapproved target')
     def test_client_disconnect_stops_pending_DNS_and_response(self):
         self.dns.set(TARGET_DOMAIN,'drop','drop');before=self.dns.count()
         c=self.open_request('/v1/resolve',dict(schemaVersion=1))

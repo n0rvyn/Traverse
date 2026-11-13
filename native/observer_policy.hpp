@@ -1,13 +1,9 @@
 #pragma once
-#include "readiness_verifier.hpp"
+#include "name_resolution.hpp"
 #include <map>
 #include <set>
 
 namespace traverse {
-struct ResolutionTarget {
-    std::string host;
-    std::set<std::string> allowed_addresses;
-};
 struct ObserverRegistration {
     std::string id,token;
     ReadinessTarget target;
@@ -22,5 +18,4 @@ struct ObserverConfiguration {
     static ObserverConfiguration parse(const nlohmann::json &configuration);
 };
 ResolutionTarget parse_resolution_request(const nlohmann::json &request);
-nlohmann::json resolve_readiness_dns(const ResolutionTarget &target);
 }

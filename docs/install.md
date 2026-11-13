@@ -18,6 +18,8 @@ sudo dnf install ./traverse-0.1.0-1.x86_64.rpm
 
 For AlmaLinux10, select a build whose native-architecture Alma RPM CI gate passed. The gate requires the app to install from BaseOS, AppStream and Extras; its CRB/Devel repositories are used only for disposable test tools. They are not extra application installation steps. The current host still requires an existing X11 desktop; package acceptance does not add normal GNOME/Wayland support. See the [compatibility evidence](compatibility.md).
 
+For a LAN-only hostname, the name must resolve to the host's LAN address on the Chrome client and on the configured checking machine. A matching `/etc/hosts` entry supports this without Internet DNS. These machines have separate hosts files; Traverse does not distribute or edit those mappings. Keep the same hostname in setup so its certificate identity matches the URL. The check validates the configured observer's vantage; a LAN result is not proof of Internet access.
+
 Run `traverse-host` as the owner of the existing X11 desktop. On first launch:
 
 1. Enter the hostname/address Chrome will use. Keep port443 or enter your own unused Chrome-compatible port. A conflict is reported without changing the existing service.

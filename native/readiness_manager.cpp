@@ -1,6 +1,7 @@
 #include "readiness_manager.hpp"
 #include "child.hpp"
 #include "readiness_verifier.hpp"
+#include "name_resolution.hpp"
 #include <set>
 
 namespace traverse {
@@ -30,6 +31,7 @@ struct ReadinessManager::State {
     Clock::time_point started{};
     std::string status="unchecked",reason,observer_instance;
     json probes=json::array();
+    json resolution=nullptr;
     std::map<std::string,json> observations,finished;
     size_t consumed=0;
     bool refresh=false,cleanup_pending=false,finish_protocol_failure=false;
@@ -42,7 +44,7 @@ struct ReadinessManager::State {
     }
     void begin() {
         started=Clock::now();status="checking";reason.clear();observer_instance.clear();
-        observations.clear();finished.clear();probes=json::array();cleanup_pending=false;
+        observations.clear();finished.clear();probes=json::array();resolution=nullptr;cleanup_pending=false;
         try {launch(Phase::Resolve,{{"operation","resolve"},{"observer",settings.agent_configuration()}});}
         catch(...) {status="unavailable";reason="agentFailed";phase=Phase::Idle;}
     }
@@ -76,7 +78,9 @@ struct ReadinessManager::State {
             if(row.at("event")!="address" || row.at("address")!=probe.at("address") || observations.count(id))
                 throw std::runtime_error("Invalid address event");
             if(result=="received") {
-                fields(row,{"schemaVersion","event","id","address","status","receipt"});
+                fields(row,{"schemaVersion","event","id","address","status","receipt","resolution"});
+                if(validate_resolution_evidence(row.at("resolution"))!=resolution)
+                    throw std::runtime_error("Changed resolution evidence");
                 const auto &receipt=row.at("receipt");
                 fields(receipt,{"instance","id","nonce","observedMonotonicMs"});
                 const auto &stamp=receipt.at("observedMonotonicMs");
@@ -123,6 +127,7 @@ struct ReadinessManager::State {
         }
         phase=Phase::Idle;
         if(cleanup_pending){status="cleanupPending";return;}
+        if(!resolution.is_null() && !complete_resolution_evidence(resolution) && reason.empty())reason="dnsFailed";
         if(reason.empty() && verified==probes.size())status="verified";
         else if(verified)status="partial";
         else status="failed";
@@ -170,7 +175,8 @@ struct ReadinessManager::State {
                 if(!failures.count(resolved))throw std::runtime_error("Invalid resolver failure");
                 phase=Phase::Idle;status="failed";reason=resolved;return;
             }
-            fields(row,{"schemaVersion","event","status","observerInstance","addresses"});
+            fields(row,{"schemaVersion","event","status","observerInstance","addresses","resolution"});
+            resolution=validate_resolution_evidence(row.at("resolution"));
             observer_instance=row.at("observerInstance").get<std::string>();
             const auto &pins=row.at("addresses");std::set<std::string> unique,identifiers;
             if(!pins.is_array() || pins.empty())throw std::runtime_error("Empty resolver result");
@@ -183,7 +189,7 @@ struct ReadinessManager::State {
                 probes.push_back({{"id",id},{"address",address}});
             }
             launch(Phase::Check,{{"operation","check"},{"observer",settings.agent_configuration()},
-                {"owner",owner},{"observerInstance",observer_instance},{"probes",probes}});
+                {"owner",owner},{"observerInstance",observer_instance},{"probes",probes},{"resolution",resolution}});
         } catch(...) {reason="agentFailed";finish();}
     }
     json snapshot() const {
@@ -198,6 +204,7 @@ struct ReadinessManager::State {
         }
         json result={{"schemaVersion",1},{"status",status},{"reason",reason},{"addresses",rows},
             {"externalReachability","unknown"},{"media","unknown"}};
+        if(!resolution.is_null())result["resolution"]=resolution;
         if(started!=Clock::time_point{})result["startedMonotonicMs"]=std::chrono::duration_cast<std::chrono::milliseconds>(started.time_since_epoch()).count();
         if(!observer_instance.empty())result["observerInstance"]=observer_instance;
         return result;

@@ -2,6 +2,7 @@
 #include "observer_settings.hpp"
 #include "owner_state.hpp"
 #include "readiness_verifier.hpp"
+#include "name_resolution.hpp"
 #include <set>
 
 namespace traverse {
@@ -102,13 +103,15 @@ void run_readiness_agent(const json &request,const std::function<void(const json
         Transport transport(request.at("observer"));auto row=transport.post("/v1/resolve",{{"schemaVersion",1}});
         auto status=row.at("status").get<std::string>();auto result=event("resolved",status);
         if(status=="resolved") {
-            fields(row,{"schemaVersion","observerInstance","status","addresses"});
+            fields(row,{"schemaVersion","observerInstance","status","addresses","resolution"});
             result["addresses"]=addresses(row.at("addresses"));
+            result["resolution"]=validate_resolution_evidence(row.at("resolution"));
         } else result["status"]=failure(row);
         result["observerInstance"]=row.at("observerInstance");emit(result);return;
     }
     if(operation=="check") {
-        fields(request,{"schemaVersion","operation","observer","owner","observerInstance","probes"});
+        fields(request,{"schemaVersion","operation","observer","owner","observerInstance","probes","resolution"});
+        auto evidence=validate_resolution_evidence(request.at("resolution"));
         Transport transport(request.at("observer"));Owner owner(request.at("owner"));
         auto instance=hex(request,"observerInstance",32);
         const auto &probes=request.at("probes");
@@ -134,11 +137,12 @@ void run_readiness_agent(const json &request,const std::function<void(const json
                 if(row.at("observerInstance")!=instance)throw std::runtime_error("Observer changed");
                 auto status=row.at("status").get<std::string>();
                 if(status=="received") {
-                    fields(row,{"schemaVersion","observerInstance","status","address","addresses","receipt"});
-                    if(row.at("address")!=probe.at("address") || addresses(row.at("addresses"))!=expected)
+                    fields(row,{"schemaVersion","observerInstance","status","address","addresses","receipt","resolution"});
+                    if(row.at("address")!=probe.at("address") || addresses(row.at("addresses"))!=expected ||
+                       validate_resolution_evidence(row.at("resolution"))!=evidence)
                         throw std::runtime_error("Observer address set changed");
                     (void)parse_readiness_receipt({{"schemaVersion",1},{"receipt",row.at("receipt")}},authority);
-                    result["status"]="received";result["receipt"]=row.at("receipt");
+                    result["status"]="received";result["receipt"]=row.at("receipt");result["resolution"]=evidence;
                 } else result["status"]=failure(row);
             } catch(...) {}
             std::lock_guard lock(writer);emit(result);

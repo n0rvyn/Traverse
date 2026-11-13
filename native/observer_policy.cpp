@@ -41,17 +41,7 @@ ResolutionTarget resolution_target(const json &value) {
     }
     return result;
 }
-bool absent_family(int code) {
-    if(code==EAI_NONAME)return true;
-#ifdef EAI_NODATA
-    if(code==EAI_NODATA)return true;
-#endif
-#ifdef EAI_ADDRFAMILY
-    if(code==EAI_ADDRFAMILY)return true;
-#endif
-    return false;
-}
-json failed(const char *status) { return {{"schemaVersion",2},{"status",status}}; }
+
 }
 ObserverConfiguration ObserverConfiguration::parse(const json &configuration) {
     fields(configuration,{"schemaVersion","listenAddress","port","certificate","privateKey","registrations"});
@@ -98,36 +88,5 @@ ResolutionTarget parse_resolution_request(const json &request) {
     fields(request,{"schemaVersion","operation","target"});version(request,2);
     if(text(request,"operation")!="resolve")throw std::runtime_error("Invalid operation");
     return resolution_target(request.at("target"));
-}
-json resolve_readiness_dns(const ResolutionTarget &target) {
-    std::set<std::string> addresses;
-    in_addr numeric4{};in6_addr numeric6{};
-    if(inet_pton(AF_INET,target.host.c_str(),&numeric4)==1 || inet_pton(AF_INET6,target.host.c_str(),&numeric6)==1) {
-        try { addresses.insert(canonical_readiness_address(target.host)); }
-        catch(...) { return failed("dnsMismatch"); }
-    } else for(int family:{AF_INET,AF_INET6}) {
-        addrinfo hints{};hints.ai_family=family;hints.ai_socktype=SOCK_STREAM;
-        addrinfo *raw=nullptr;
-        int error=getaddrinfo(target.host.c_str(),nullptr,&hints,&raw);
-        std::unique_ptr<addrinfo,decltype(&freeaddrinfo)> answer(raw,freeaddrinfo);
-        if(error) {
-            if(absent_family(error))continue;
-            return failed("dnsFailed"); // Never hide family failure behind another family's success.
-        }
-        for(auto *item=answer.get();item;item=item->ai_next) {
-            char buffer[INET6_ADDRSTRLEN];const void *bytes=nullptr;
-            if(item->ai_family==AF_INET && item->ai_addrlen>=sizeof(sockaddr_in))
-                bytes=&reinterpret_cast<sockaddr_in *>(item->ai_addr)->sin_addr;
-            else if(item->ai_family==AF_INET6 && item->ai_addrlen>=sizeof(sockaddr_in6))
-                bytes=&reinterpret_cast<sockaddr_in6 *>(item->ai_addr)->sin6_addr;
-            else return failed("dnsFailed");
-            if(!inet_ntop(item->ai_family,bytes,buffer,sizeof(buffer)))return failed("dnsFailed");
-            try { addresses.insert(canonical_readiness_address(buffer)); }
-            catch(...) { return failed("dnsMismatch"); }
-        }
-    }
-    if(addresses.empty())return failed("dnsFailed");
-    for(const auto &address:addresses)if(!target.allowed_addresses.count(address))return failed("dnsMismatch");
-    return {{"schemaVersion",2},{"status","resolved"},{"addresses",addresses}};
 }
 }

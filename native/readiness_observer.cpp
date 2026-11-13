@@ -62,7 +62,11 @@ class Observer {
         auto row=json::parse(result->output);version(row,2);
         auto status=row.at("status").get<std::string>();
         if(status=="resolved" && result->exit_status==0) {
-            fields(row,{"schemaVersion","status","addresses"});
+            fields(row,{"schemaVersion","status","addresses","resolution"});
+            auto evidence=traverse::validate_resolution_evidence(row.at("resolution"));
+            for(const auto *family:{"a","aaaa"})for(const auto &address:evidence.at("dns").at(family).at("addresses"))
+                if(!registration.resolution.allowed_addresses.count(address.get<std::string>()))
+                    throw std::runtime_error("Unregistered DNS evidence");
             const auto &addresses=row.at("addresses");
             if(!addresses.is_array() || addresses.empty())throw std::runtime_error("Empty resolver result");
             std::set<std::string> checked;
@@ -71,7 +75,7 @@ class Observer {
                 if(!registration.resolution.allowed_addresses.count(pin) || !checked.insert(pin).second)
                     throw std::runtime_error("Invalid resolver authority");
             }
-            return json{{"status","resolved"},{"addresses",checked}};
+            return json{{"status","resolved"},{"addresses",checked},{"resolution",evidence}};
         }
         fields(row,{"schemaVersion","status"});
         if(result->exit_status!=0 && (status=="dnsFailed" || status=="dnsMismatch"))return json{{"status",status}};
@@ -95,7 +99,7 @@ class Observer {
             if(status!="resolved"){answer(response,status.c_str());return;}
             if(!check) {
                 reply(response,{{"schemaVersion",1},{"observerInstance",instance},{"status","resolved"},
-                    {"addresses",resolved->at("addresses")}});return;
+                    {"addresses",resolved->at("addresses")},{"resolution",resolved->at("resolution")}});return;
             }
             auto address=verification.at("target").at("address");
             auto addresses=resolved->at("addresses");
@@ -111,7 +115,8 @@ class Observer {
                 auto expected=traverse::parse_readiness_verification(verification);
                 (void)traverse::parse_readiness_receipt({{"schemaVersion",1},{"receipt",result.at("receipt")}},expected.lease);
                 reply(response,{{"schemaVersion",1},{"observerInstance",instance},{"status","received"},
-                    {"address",address},{"addresses",addresses},{"receipt",result.at("receipt")}});return;
+                    {"address",address},{"addresses",addresses},{"resolution",resolved->at("resolution")},
+                    {"receipt",result.at("receipt")}});return;
             }
             fields(result,{"schemaVersion","status"});
             static const std::set<std::string> failures={"connectionFailed","tlsFailed","httpRejected","invalidReceipt"};

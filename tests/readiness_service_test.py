@@ -305,7 +305,7 @@ class ReadinessServiceTests(unittest.TestCase):
                 self.assertEqual(resolved['status'],'resolved');self.assertEqual(resolved['addresses'],['127.0.0.1'])
                 probe=dict(id='c'*32,address='127.0.0.1')
                 checked=agent(dict(schemaVersion=1,operation='check',observer=metadata,owner=owner,
-                    observerInstance=resolved['observerInstance'],probes=[probe]))[0]
+                    observerInstance=resolved['observerInstance'],probes=[probe],resolution=resolved['resolution']))[0]
                 self.assertEqual(checked['status'],'received')
                 finished=agent(dict(schemaVersion=1,operation='finish',owner=owner,
                     probes=[dict(id=probe['id'],receipt=checked['receipt'])]))[0]
@@ -346,9 +346,23 @@ class ReadinessServiceTests(unittest.TestCase):
                         self.assertEqual(sum(row['status']=='verified' for row in stalled['addresses']),1)
                     wait(lambda:not children(observer.pid),'Stalled-address observer worker survived batch cancellation',timeout=3)
                     dns.set(DOMAIN,['127.0.0.1'])
+                    # Positive real HTTPS receipts must not conceal a failed DNS family.
+                    dns.set(DOMAIN,['127.0.0.1'],'fail')
+                    dns_partial=agent(dict(observer=metadata,owner=owner,agent=AGENT),binary=MANAGER)[0]['snapshot']
+                    self.assertEqual(dns_partial['status'],'partial');self.assertEqual(dns_partial['reason'],'dnsFailed')
+                    self.assertTrue(all(row['status']=='verified' for row in dns_partial['addresses']))
+                    self.assertEqual(dns_partial['resolution']['dns']['aaaa']['status'],'failed')
+                    dns.set(DOMAIN,'drop','drop');count=dns.count()
+                    from readiness_observer_test import hosts_file
+                    with hosts_file('127.0.0.1 '+DOMAIN):
+                        lan=agent(dict(observer=metadata,owner=owner,agent=AGENT),binary=MANAGER)[0]['snapshot']
+                        self.assertEqual(lan['status'],'verified');self.assertEqual(lan['resolution']['basis'],'hosts')
+                        self.assertEqual(lan['resolution']['dns']['a']['status'],'notChecked')
+                        self.assertEqual(dns.count(),count,'LAN check contacted DNS')
+                    dns.set(DOMAIN,['127.0.0.1'])
                     # Boundary-only inherited-channel faults. The wrapper delegates
                     # real reservations/HTTPS/cleanup to the actual native agent.
-                    for fault in ('duplicate','wrong-id','wrong-receipt','incomplete','exit-failure','cleanup-failure'):
+                    for fault in ('duplicate','wrong-id','wrong-receipt','incomplete','exit-failure','cleanup-failure','missing-resolution','changed-resolution'):
                         wrapper=self.private/('agent-'+fault);witness=self.private/('ids-'+fault)
                         wrapper.write_text('''#!/usr/bin/python3
 import json,os,subprocess,sys
@@ -361,6 +375,13 @@ if request['operation']=='check':
     previous=json.loads(path.read_text()) if path.exists() else []
     path.write_text(json.dumps(previous+[p['id'] for p in request['probes']]))
     if FAULT=='duplicate':output+=output
+    if FAULT in ('missing-resolution','changed-resolution'):
+        rows=[json.loads(line) for line in output.splitlines()]
+        for row in rows:
+            if row['status']=='received':
+                if FAULT=='missing-resolution':row.pop('resolution')
+                else:row['resolution']['dns']['aaaa']['status']='failed'
+        output=''.join(json.dumps(row)+'\\n' for row in rows)
     if FAULT=='wrong-id':
         rows=[json.loads(line) for line in output.splitlines()]
         for row in rows:row['id']='0'*32
@@ -413,7 +434,7 @@ sys.exit(7 if FAULT=='exit-failure' and request['operation']=='check' else resul
                     stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=self.native_env,**self.identity)
                 self.processes.append(pending)
                 request_body=dict(schemaVersion=1,operation='check',observer=metadata,owner=owner,
-                    observerInstance=identity,probes=[dict(id=known,address='127.0.0.1')])
+                    observerInstance=identity,probes=[dict(id=known,address='127.0.0.1')],resolution=resolved['resolution'])
                 pending.stdin.write(json.dumps(request_body).encode());pending.stdin.close();pending.stdin=None
                 wait(lambda:dns.count()>count and pending.poll() is None and
                     self.private_call('/readiness/inspect',dict(schemaVersion=1,id=known))[0]==200,
@@ -448,7 +469,7 @@ sys.exit(7 if FAULT=='exit-failure' and request['operation']=='check' else resul
                 for identifier,expected_instance,changed_dns in (('8'*32,identity,False),('9'*32,current_instance,True)):
                     if changed_dns:dns.set(DOMAIN,['127.0.0.1','127.0.0.2'])
                     rejected=agent(dict(schemaVersion=1,operation='check',observer=metadata,owner=owner,
-                        observerInstance=expected_instance,probes=[dict(id=identifier,address='127.0.0.1')]))[0]
+                        observerInstance=expected_instance,probes=[dict(id=identifier,address='127.0.0.1')],resolution=resolved['resolution']))[0]
                     self.assertEqual(rejected['status'],'agentFailed')
                     # Arrival at the owner alone must not make a rejected observer reply succeed.
                     inspected=self.private_call('/readiness/inspect',dict(schemaVersion=1,id=identifier))

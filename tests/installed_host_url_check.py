@@ -15,7 +15,7 @@ from host_supervisor_test import OwnerFixture
 from installed_managed_certificates import PREFIX,prefix_processes,require_disposable_environment
 from installed_standalone import alive,children,descendants,free_port,ipc,wait
 from issuer_native import DOMAIN
-from readiness_observer_test import DNS
+from readiness_observer_test import DNS,hosts_file
 
 def certificate(cert,key,san,issuer=None,common_name=DOMAIN):
     if issuer:
@@ -92,6 +92,22 @@ def main():
                 assert owner.call('check-connection')['ok']
                 rejected=owner.call('check-connection');assert not rejected['ok'] and rejected['error']=='check-running',rejected
                 wait(verified,'Explicit retry completion');assert authority_state()==before
+                dns.set(DOMAIN,'drop','drop')
+                with hosts_file('127.0.0.1 '+DOMAIN) as hosts:
+                    wait(lambda:verified() and owner.call('status')['urlCheck'].get('resolution',{}).get('basis')=='hosts',
+                        'Hosts-only automatic URL verification',timeout=30)
+                    count=dns.count();previous=owner.call('status')['urlCheck']['startedMonotonicMs']
+                    assert owner.call('check-connection')['ok']
+                    wait(lambda:verified() and owner.call('status')['urlCheck']['startedMonotonicMs']>previous,
+                        'Explicit hosts-only verification')
+                    assert dns.count()==count,'Hosts-only native host check contacted DNS'
+                    hosts.write_text(hosts.read_text().replace('127.0.0.1 '+DOMAIN,'127.0.0.2 '+DOMAIN))
+                    wait(lambda:owner.call('status').get('urlCheck',{}).get('reason')=='dnsMismatch',
+                        'Changed hosts mapping did not invalidate URL proof',timeout=30)
+                    assert authority_state()==before
+                    dns.set(DOMAIN,['127.0.0.1'])
+                wait(lambda:verified() and owner.call('status')['urlCheck']['resolution']['basis']=='system',
+                    'Hosts removal did not restore current DNS evidence',timeout=30)
                 start=owner.call('status')['urlCheck']['startedMonotonicMs']
                 os.utime('/etc/resolv.conf',None)
                 wait(lambda:(owner.call('status').get('urlCheck') or {}).get('startedMonotonicMs',0)>start,'Resolver event failed to invalidate URL result')
@@ -140,6 +156,7 @@ def main():
                 wait(lambda:not any(alive(pid) for pid in owned),'Native child survived host loss',timeout=12)
                 wait(lambda:prefix_processes()==baseline,'URL agent/worker survived host loss',timeout=5)
                 print(json.dumps(dict(ending=ending,automaticStart=True,realHttpsReceipt=True,retry=True,
+                    offlineHostsVerifiedWithoutDNS=True,hostsChangeAndRemovalInvalidated=True,
                     resolverInvalidation=True,interfaceInvalidation=interface_events,certificateInvalidation=True,pendingDnsInputRelease=True,
                     localInputReleaseObservedMs=round(release_ms,3),allOwnedReaped=True)),flush=True)
             except BaseException:

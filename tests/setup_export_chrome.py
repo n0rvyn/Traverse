@@ -16,13 +16,14 @@ import struct
 import subprocess
 import tempfile
 import time
+from contextlib import ExitStack
 
 from chrome_fixture import Browser, CLIENT_UID, CLIENT_GID, PAIRING_READY, ensure_client_identity
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, ipc, wait
 from issuer_native import DOMAIN
 from host_package_fixture import host_command, check_ui_process
-from readiness_observer_test import DNS
+from readiness_observer_test import DNS,hosts_file
 
 
 def main():
@@ -33,7 +34,7 @@ def main():
     ensure_client_identity()
     from chrome_loading_guard import verify_loading_guard
     verify_loading_guard(PREFIX/'share/traverse/web', evidence)
-    with tempfile.TemporaryDirectory(prefix='setup-chrome-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='setup-chrome-') as temporary,ExitStack() as mappings:
         root=Path(temporary);root.chmod(0o755)
         host=root/'host';client=root/'client'
         for p,uid in ((host,65534),(client,CLIENT_UID)):
@@ -110,7 +111,12 @@ def main():
             if os.environ.get('TRAVERSE_TEST_RESOURCE_TRACE')=='1':
                 from resource_fixture import ResourceTrace
                 resources=ResourceTrace(evidence/'resource-pressure.jsonl')
-            dns=DNS();dns.set(DOMAIN,['127.0.0.1'])
+            dns=DNS()
+            positive='hosts-counter-control.example.test';dns.set(positive,['127.0.0.1'])
+            assert socket.getaddrinfo(positive,None,socket.AF_INET,socket.SOCK_STREAM)
+            assert any(name==positive for name,kind in dns.queries),'DNS query counter positive control absent'
+            dns.set(DOMAIN,'drop','drop')
+            mappings.enter_context(hosts_file('127.0.0.1 '+DOMAIN))
             process=launch();wait(lambda:window('Traverse setup'),'Actual fresh setup missing')
             check_ui_process(process,PREFIX)
             assert not config.exists();x11('focus','Traverse setup');text(DOMAIN);x11('press','Tab');replace(str(port));x11('press','Tab');x11('press','Tab');x11('press','space')
@@ -191,7 +197,8 @@ def main():
             wait(restarted,'Relaunch did not use saved endpoint',timeout=35);assert hashlib.sha256(public.read_bytes()).hexdigest()==root_hash
             browser=Browser(client,client/'relaunch',client_env);assert not browser.navigate('https://'+DOMAIN+':10443/').get('errorText');browser.wait(PAIRING_READY,'Same exported trust after next launch')
             x11('close','Traverse');process.wait(timeout=15);wait(lambda:not prefix_processes(),'Relaunch Stop left children');browser.close();browser=None
-            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
+            assert not any(name==DOMAIN for name,kind in dns.queries),'Hosts-only Chrome journey queried DNS for its URL'
+            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','hostsFileResolution':True,'testDomainDnsQueries':0,'sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)
         except BaseException:
             diagnostic('failure-before-cleanup')
