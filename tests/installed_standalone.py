@@ -150,8 +150,11 @@ def main():
             path.write_text(json.dumps(config));os.chown(path, UID, GID);path.chmod(0o600)
         old_credentials = None
         default = free_port() if os.environ.get('TRAVERSE_TEST_CUSTOM_ONLY') == '1' else 443
-        for port, base, ending in [(default, '/', 'terminate'), (free_port(), '/traverse/v1.2/', 'local-stop'),
-                                    (free_port(), '/', 'crash'), (free_port(), '/', 'child-failure')]:
+        for base, ending in [('/', 'terminate'), ('/traverse/v1.2/', 'local-stop'),
+                             ('/', 'crash'), ('/', 'child-failure')]:
+            # Do not leave future ephemeral ports available to earlier cases'
+            # outgoing connections, which can retain them in TCP TIME_WAIT.
+            port = default if ending == 'terminate' else free_port()
             before_instances = set((runtime/'traverse').glob('instance-*'))
             configure(port, base, omit_port=port == 443)
             origin = 'https://localhost'+('' if port == 443 else ':'+str(port))
@@ -442,6 +445,16 @@ def main():
                                       'certificateMetadataOwnerPidAndModeVerified': True,
                                       'certificateRenewalExpiryAndSupervisorRecovery': ending == 'terminate'}))
                 except BaseException:
+                    socket_rows = {}
+                    for table in ('tcp', 'tcp6', 'udp', 'udp6'):
+                        try:
+                            socket_rows[table] = [row.split() for row in
+                                Path('/proc/net/'+table).read_text().splitlines()[1:]
+                                if int(row.split()[1].rsplit(':', 1)[1], 16) == port]
+                        except OSError as error:
+                            socket_rows[table] = {'readErrno': error.errno}
+                    print(json.dumps({'standaloneFailure': ending, 'port': port,
+                                      'launcherExit': launch.poll(), 'socketRows': socket_rows}))
                     diagnostic = re.sub(r'Pairing code: \S+', 'Pairing code: [redacted]', log_path.read_text())
                     if credentials:
                         diagnostic = diagnostic.replace(credentials['credential'], '[redacted]')
