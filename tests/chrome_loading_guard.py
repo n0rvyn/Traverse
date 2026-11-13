@@ -9,12 +9,34 @@ import signal
 import subprocess
 import tempfile
 import threading
+import shutil
 from urllib.parse import parse_qs
 from chrome_fixture import CDP, CLIENT_UID, CLIENT_GID, ensure_client_identity
 from issuer_native import wait_for
 from installed_standalone import alive, descendants
 
 DUMMY='LOADING_GUARD_FIXTURE'
+
+
+def startup_diagnostics(process,profile,display_log):
+    result={'ownedProcesses':[],'xvfbErrors':display_log.read_text(errors='replace') if display_log.exists() else None}
+    if os.uname().sysname=='Linux':
+        for pid in sorted({process.pid,*descendants(process.pid)}):
+            row={'pid':pid};base=Path('/proc')/str(pid)
+            try:
+                status=dict(line.split(':',1) for line in (base/'status').read_text().splitlines() if ':' in line)
+                row.update({key:status[key].strip() for key in ('Name','State','PPid','Uid')})
+                row['executable']=os.readlink(base/'exe')
+                row['arguments']=[os.fsdecode(value) for value in (base/'cmdline').read_bytes().split(b'\0') if value]
+                row['waitChannel']=(base/'wchan').read_text().strip()
+            except (OSError,ProcessLookupError) as error:row['snapshotError']=type(error).__name__
+            result['ownedProcesses'].append(row)
+        if shutil.which('dpkg-query'):
+            query=subprocess.run(['dpkg-query','-W','-f=${Package}=${Version}\n','google-chrome-stable','xvfb','xauth'],
+                text=True,capture_output=True)
+            result['packages']={'status':query.returncode,'versions':query.stdout.splitlines(),'errors':query.stderr}
+    result['profileExists']=profile.is_dir()
+    return result
 
 
 def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-stable')):
@@ -60,7 +82,8 @@ def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-sta
                 if identity:os.chown(profile,CLIENT_UID,CLIENT_GID)
                 args=[str(chrome),'--no-first-run','--no-default-browser-check','--enable-automation',
                     '--remote-debugging-port=0','--user-data-dir='+str(profile),'--window-size=1280,900','about:blank']
-                if os.uname().sysname=='Linux':args=['xvfb-run','-a','-s','-screen 0 1280x900x24',*args]
+                display_log=profile/'xvfb-errors.txt'
+                if os.uname().sysname=='Linux':args=['xvfb-run','-a','-e',str(display_log),'-s','-screen 0 1280x900x24',*args]
                 environment=os.environ.copy() if os.uname().sysname=='Darwin' else {}
                 environment.update(PATH=os.environ.get('PATH','/usr/bin:/bin'),HOME=str(profile),LANG='C.UTF-8')
                 if os.environ.get('TMPDIR'):environment['TMPDIR']=os.environ['TMPDIR']
@@ -75,6 +98,7 @@ def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-sta
                             lines=path.read_text().splitlines()
                             return 'ws://127.0.0.1:'+lines[0]+lines[1] if len(lines)==2 else None
                         channel=CDP(wait_for(endpoint,'Loading guard debugger',[process]))
+                        state['browser']=channel.call('Browser.getVersion')['product']
                         arguments=channel.call('Browser.getBrowserCommandLine')['arguments']
                         forbidden=('--ignore-certificate-errors','--allow-insecure-localhost','--no-sandbox','--disable-setuid-sandbox','--disable-web-security')
                         assert not any(any(value==flag or value.startswith(flag+'=') for flag in forbidden) for value in arguments)
@@ -123,13 +147,17 @@ def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-sta
                         debugger=profile/'DevToolsActivePort'
                         state['launcherExit']=process.poll()
                         state['debuggerFileExists']=debugger.exists()
+                        try:state['startup']=startup_diagnostics(process,profile,display_log)
+                        except Exception as error:state['startup']={'snapshotError':type(error).__name__}
                         try:state['debuggerLineCount']=len(debugger.read_text().splitlines())
                         except OSError:state['debuggerLineCount']=None
                         # This profile only visits about:blank and the owned
                         # dummy-code server; it never receives host authority.
                         diagnostic=(directory/'browser-errors.txt').read_text(errors='replace')
                         print(json.dumps({'loadingGuardFailure':state,'browserStderr':diagnostic}),flush=True)
-                        (evidence/('loading-guard-'+mode+'-failure.json')).write_text(json.dumps(state,indent=2))
+                        # Existing CI uploads *diagnostics.json even if startup
+                        # fails before any screenshot can be captured.
+                        (evidence/('loading-guard-'+mode+'-diagnostics.json')).write_text(json.dumps(state,indent=2))
                         (evidence/('loading-guard-'+mode+'-browser-errors.txt')).write_text(diagnostic)
                         raise
                     finally:
