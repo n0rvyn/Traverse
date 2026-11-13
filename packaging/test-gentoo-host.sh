@@ -211,6 +211,8 @@ assert value['status']=='passed' and value['packagedEntry']
 assert value['sourceVideoSize']=={'width':1280,'height':1024}
 assert value['nativePeerState']['peerActive'] and value['nativePeerState']['controlOpen']
 assert value['nativePeerState']['rtcState']=='connected'
+assert value['nativePeerState']['health']['status']=='observed'
+assert value['nativePeerState']['health']['generation']==value['nativePeerState']['generation']
 VERIFY
 GENTOO
 CHECK

@@ -90,7 +90,9 @@ def main():
                 connection.request('GET','/state');response=connection.getresponse();value=json.loads(response.read())
                 assert response.status==200 and value['schemaVersion']==1 and value['pid']==pid
                 assert 0<=int(time.monotonic()*1000)-value['observedMonotonicMs']<=2000,'Private peer observation is stale'
-                return {key:value[key] for key in ('schemaVersion','pid','observedMonotonicMs','generation','peerPresent','peerActive','rtcState','controlOpen')}
+                result={key:value[key] for key in ('schemaVersion','pid','observedMonotonicMs','generation','peerPresent','peerActive','rtcState','controlOpen')}
+                if value['peerPresent']:result['health']=value['health']
+                return result
             finally:connection.close()
         def text(value):
             for ch in value:
@@ -167,6 +169,20 @@ def main():
                 except OSError:return False
                 return native_peer['peerActive'] and native_peer['controlOpen'] and native_peer['rtcState']=='connected'
             wait(native_connected,'Native service did not report established Chrome control')
+            def native_video_observed(previous=None):
+                if not native_connected():return False
+                health=native_peer['health']
+                assert health['schemaVersion']==1 and health['generation']==native_peer['generation']
+                if health['status']!='observed':return False
+                observation=health['lastObservation']
+                assert observation['width']==video_size['width'] and observation['height']==video_size['height']
+                assert observation['decodedFrames']>0 and observation['presentedFrames']>0
+                assert observation['transport']['dtlsState']=='connected'
+                assert observation['transport']['protocol'] in ('udp','tcp')
+                return previous is None or (observation['observedMonotonicMs']>previous['observedMonotonicMs'] and
+                    observation['decodedFrames']>previous['decodedFrames'] and observation['presentedFrames']>previous['presentedFrames'])
+            wait(native_video_observed,'Packaged Chrome video health receipt did not reach the native service')
+            first_health=native_peer['health']['lastObservation'];peer_generation=native_peer['generation']
             browser.evaluate("document.getElementById('desktop').focus()");browser.key('keyDown','Shift','ShiftLeft',16)
             wait(lambda:x11('query')['shift']==1,'Fresh exported-CA Chrome input missing');browser.key('keyUp','Shift','ShiftLeft',16);wait(lambda:x11('query')['shift']==0,'Initial Chrome input release missing')
             frames=browser.evaluate("document.getElementById('desktop').getVideoPlaybackQuality().totalVideoFrames")
@@ -181,7 +197,8 @@ def main():
             browser.evaluate("document.getElementById('desktop').focus()");browser.key('keyDown','Shift','ShiftLeft',16);wait(lambda:x11('query')['shift']==1,'Controller lost after Settings save')
             media_time=browser.evaluate("document.getElementById('desktop').currentTime")
             browser.wait("document.body.classList.contains('connected') && document.getElementById('desktop').currentTime>"+str(media_time+1),'Sustained live video after Settings save')
-            wait(native_connected,'Native service lost connected state after Settings save')
+            wait(lambda:native_video_observed(first_health),'Packaged Chrome health did not advance through Settings save')
+            assert native_peer['generation']==peer_generation,'Settings save replaced the real controller'
             # Pairing is consumed before any retained desktop screenshot.
             x11('capture',str(evidence/'fresh-export-native.ppm'))
             image=browser.send('Page.captureScreenshot',{'format':'png'})['data'];(evidence/'fresh-export-chrome.png').write_bytes(base64.b64decode(image))
@@ -203,6 +220,7 @@ def main():
             assert dns.records[DOMAIN]=={1:'drop',28:'drop'},'Unexpected DNS answer enabled for hosts-only journey'
             queries=[kind for name,kind in dns.queries if name==DOMAIN]
             report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','hostsFileResolution':True,'testDomainDnsQueries':len(queries),'testDomainDnsQueryTypes':sorted(set(queries)),'testDomainDnsAddressAnswers':0,'withoutInternetRoute':True,'sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
+            report['nativeVideoHealthBeforeSettings']=first_health
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)
         except BaseException:
             diagnostic('failure-before-cleanup')

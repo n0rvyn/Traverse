@@ -113,5 +113,6 @@ assert report['status']=='passed' and report['packagedEntry']
 assert report['sourceVideoSize']=={'width':1280,'height':1024}
 peer=report['nativePeerState']
 assert peer['peerActive'] and peer['controlOpen'] and peer['rtcState']=='connected'
+assert peer['health']['status']=='observed' and peer['health']['generation']==peer['generation']
 VERIFY
 CHECK
