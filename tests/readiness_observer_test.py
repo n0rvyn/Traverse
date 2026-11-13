@@ -149,23 +149,10 @@ for family in (socket.AF_INET,socket.AF_INET6):
             for name in ('/etc/nsswitch.conf','/etc/authselect/nsswitch.conf','/etc/resolv.conf','/usr/share/authselect/default/local/nsswitch.conf'):
                 try:files[name]=Path(name).read_text()
                 except OSError as error:files[name]=str(error)
-            # Single-variable control in the already-verified disposable root.
-            # Restore exact bytes before retaining the ORIGINAL failed assertion.
-            nss=Path('/etc/nsswitch.conf');original=nss.read_bytes()
-            control=b'\n'.join(b'hosts: files dns' if line.lstrip().startswith(b'hosts:') else line
-                for line in original.split(b'\n'))
-            assert control!=original
-            try:
-                nss.write_bytes(control)
-                comparison=subprocess.run([sys.executable,'-c','HOST='+repr(host)+'\n'+code],
-                    user=65534,group=65534,extra_groups=[],env=clean_environment(),text=True,capture_output=True,timeout=8)
-            finally:nss.write_bytes(original)
-            assert nss.read_bytes()==original
             print(json.dumps(dict(dnsDiagnostic=True,expected=status,actual=row['status'],files=files,
                 libc=os.confstr('CS_GNU_LIBC_VERSION'),
                 probeExit=probe.returncode,probeStdout=probe.stdout,probeStderr=probe.stderr,
-                filesDnsControl=dict(exit=comparison.returncode,stdout=comparison.stdout,stderr=comparison.stderr),
-                originalNssRestored=True,records=self.dns.records[host],queries=self.dns.queries)),flush=True)
+                records=self.dns.records[host],queries=self.dns.queries)),flush=True)
         self.assertEqual(row['status'],status);self.assertEqual(p.returncode,0 if status=='resolved' else 1)
         if status!='resolved':self.assertNotIn('addresses',row)
         return row
