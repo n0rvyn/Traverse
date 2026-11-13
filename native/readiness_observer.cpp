@@ -1,5 +1,6 @@
 #include "observer_policy.hpp"
 #include "child.hpp"
+#include "observer_media.hpp"
 #include <charconv>
 #include <set>
 
@@ -34,6 +35,7 @@ json configuration(const std::string &path) {
 class Observer {
     traverse::ObserverConfiguration policy;
     std::filesystem::path worker;
+    traverse::ObserverMedia media;
     const std::string instance=random_secret(16);
     std::optional<OwnedOperation::Result> run(const httplib::Request &request,const json &input) {
         if(stopping || request.is_connection_closed())return std::nullopt;
@@ -124,14 +126,56 @@ class Observer {
             throw std::runtime_error("Invalid verifier completion");
         } catch(...) {answer(response,"internalFailure",503);}
     }
+    void handle_media(const httplib::Request &request,httplib::Response &response,bool check) {
+        const auto *registration=authenticate(request);
+        auto answer_media=[&](const char *status,int code=200) {
+            reply(response,{{"schemaVersion",2},{"observerInstance",instance},{"status",status}},code);
+        };
+        if(!registration){answer_media("unauthorized",403);return;}
+        json body,verification,relay=nullptr;std::string mode,advertised;unsigned short port=0;
+        try {
+            body=json::parse(request.body);version(body,2);
+            if(check) {
+                if(body.value("mode",std::string{})=="relay") {
+                    fields(body,{"schemaVersion","address","lease","mode","observerAddress","observerPort","relay"});
+                    relay=body.at("relay");
+                } else fields(body,{"schemaVersion","address","lease","mode","observerAddress","observerPort"});
+                mode=body.at("mode").get<std::string>();if(mode!="direct" && mode!="relay")throw std::invalid_argument("Invalid media mode");
+                advertised=traverse::canonical_readiness_address(body.at("observerAddress").get<std::string>());
+                const auto &number=body.at("observerPort");
+                if(!number.is_number_integer() || number<1 || number>65535)throw std::invalid_argument("Invalid observer port");
+                port=number.get<unsigned short>();
+                verification=registration->verification(body.at("address").get<std::string>(),body.at("lease"));
+            } else fields(body,{"schemaVersion"});
+        } catch(...) {answer_media("invalidRequest",400);return;}
+        try {
+            auto resolved=resolve(request,*registration);if(!resolved)return;
+            auto status=resolved->at("status").get<std::string>();
+            if(status!="resolved"){answer_media(status.c_str());return;}
+            if(!check) {
+                reply(response,{{"schemaVersion",2},{"observerInstance",instance},{"status","resolved"},
+                    {"addresses",resolved->at("addresses")},{"resolution",resolved->at("resolution")},{"media",media.endpoint()}});return;
+            }
+            auto address=verification.at("target").at("address");const auto &addresses=resolved->at("addresses");
+            if(std::find(addresses.begin(),addresses.end(),address)==addresses.end()){answer_media("dnsMismatch");return;}
+            auto expected=traverse::parse_readiness_verification(verification);
+            auto result=media.check(expected,mode,advertised,port,relay,[&]{return stopping || request.is_connection_closed();});
+            if(result.at("status")!="received"){answer_media(result.at("status").get<std::string>().c_str());return;}
+            reply(response,{{"schemaVersion",2},{"observerInstance",instance},{"status","received"},{"address",address},
+                {"addresses",addresses},{"resolution",resolved->at("resolution")},{"receipt",result.at("receipt")}});
+        } catch(...) {answer_media("internalFailure",503);}
+    }
   public:
     Observer(traverse::ObserverConfiguration config,std::filesystem::path executable)
-        :policy(std::move(config)),worker(std::move(executable)){}
+        :policy(std::move(config)),worker(std::move(executable)),
+         media(worker.parent_path()/"traverse-readiness-media",policy.listen_address){}
     void serve() {
         httplib::SSLServer server(policy.certificate.c_str(),policy.private_key.c_str());
         if(!server.is_valid())throw std::runtime_error("Observer TLS configuration invalid");
         server.Post("/v1/resolve",[this](const auto &request,auto &response){handle(request,response,false);});
         server.Post("/v1/check",[this](const auto &request,auto &response){handle(request,response,true);});
+        server.Post("/v2/resolve",[this](const auto &request,auto &response){handle_media(request,response,false);});
+        server.Post("/v2/media",[this](const auto &request,auto &response){handle_media(request,response,true);});
         if(!server.bind_to_port(policy.listen_address,policy.port))throw std::runtime_error("Observer listener unavailable");
         std::mutex mutex;std::condition_variable changed;bool entered=false,exited=false;bool success=false;
         server.set_start_handler([&]{std::lock_guard lock(mutex);entered=true;changed.notify_all();});

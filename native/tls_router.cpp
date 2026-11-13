@@ -1,4 +1,7 @@
 #include "tls_router.hpp"
+#include "tls_stream.hpp"
+#include "probe_relay_routes.hpp"
+#include "probe_relay_broker.hpp"
 #include "acme_challenge.hpp"
 #include "endpoint_settings.hpp"
 #include "bind_privilege.hpp"
@@ -26,6 +29,7 @@
 namespace traverse {
 namespace {
 using Clock = std::chrono::steady_clock;
+constexpr std::string_view probe_prefix="traverse-probe/";
 struct Socket {
     int fd = -1;
     explicit Socket(int value = -1) : fd(value) {}
@@ -68,13 +72,6 @@ Route classify(const unsigned char *data, size_t size) {
                ? Route::Turn
                : Route::Invalid;
 }
-struct Buffer {
-    std::array<unsigned char, 16384> data{};
-    size_t size = 0, offset = 0;
-    bool empty() const {
-        return offset == size;
-    }
-};
 bool wait_for(int fd, short events, Clock::time_point deadline, const std::atomic<bool> &stopped) {
     while (!stopped && Clock::now() < deadline) {
         pollfd item{fd, events, 0};
@@ -113,6 +110,7 @@ int alpn(SSL *, const unsigned char **out, unsigned char *outlen, const unsigned
 struct TlsRouter::Impl {
     TlsRouterConfig config;
     std::unique_ptr<AcmeChallenges> challenges;
+    std::unique_ptr<ProbeRelayBroker> probe_broker;
     std::unique_ptr<TlsCertificates> certificates;
     std::shared_ptr<SSL_CTX> bootstrap;
     Socket listener;
@@ -127,12 +125,16 @@ struct TlsRouter::Impl {
 
     enum class Admission { Undecided, Application, Challenge };
     struct Handshake {
+        std::shared_ptr<Connection> connection;
+        std::shared_ptr<ProbeRelayRoute> probe;
+        std::shared_ptr<void> probe_use;
         Admission admission = Admission::Undecided;
         std::shared_ptr<const TlsCertificateContext> application;
         std::shared_ptr<const AcmeChallengeContext> challenge;
         std::array<unsigned char, 32> challenge_session{};
         bool challenge_session_prepared = false;
         bool valid() const {
+            if (probe && probe->stopped) return false;
             if (admission == Admission::Undecided) return true;
             return admission == Admission::Application ? application && application->valid_now()
                                                       : challenge && challenge->valid_now();
@@ -141,6 +143,44 @@ struct TlsRouter::Impl {
     static int handshake_index() {
         static const int index = SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
         return index;
+    }
+    static int select_alpn(SSL *ssl, const unsigned char **out, unsigned char *outlen,
+                           const unsigned char *in, unsigned length, void *opaque) {
+        try {
+        auto &owner=*static_cast<Impl *>(opaque);
+        auto *state=static_cast<Handshake *>(SSL_get_ex_data(ssl,handshake_index()));
+        std::string identity;
+        unsigned protocols=0;
+        for(unsigned i=0;i<length;) {
+            unsigned size=in[i++];
+            if(!size || size>length-i) return SSL_TLSEXT_ERR_ALERT_FATAL;
+            std::string_view protocol(reinterpret_cast<const char *>(in+i),size);
+            if(protocol.substr(0,probe_prefix.size())==probe_prefix) identity=std::string(protocol);
+            ++protocols;i+=size;
+        }
+        if(identity.empty()) return alpn(ssl,out,outlen,in,length,nullptr);
+        if(protocols!=1 || !state || !state->connection || !owner.config.probe_routes ||
+            owner.config.challenge_only) return SSL_TLSEXT_ERR_ALERT_FATAL;
+        try {
+            auto route=owner.config.probe_routes->find(identity);
+            if(!route || (state->probe && state->probe!=route)) return SSL_TLSEXT_ERR_ALERT_FATAL;
+            if(!state->probe_use) {
+                auto connection=state->connection;
+                state->probe_use=route->attach([connection]{connection->cancel();});
+                state->probe=route;
+            }
+            // Probe handshakes cannot inherit a controller/other lease session.
+            std::array<unsigned char,32> scope{};
+            if(RAND_bytes(scope.data(),scope.size())!=1 ||
+                SSL_set_session_id_context(ssl,scope.data(),scope.size())!=1 ||
+                SSL_set_num_tickets(ssl,0)!=1 || SSL_set_max_early_data(ssl,0)!=1)
+                return SSL_TLSEXT_ERR_ALERT_FATAL;
+            SSL_set_options(ssl,SSL_OP_NO_TICKET);
+            *out=reinterpret_cast<const unsigned char *>(route->alpn.data());
+            *outlen=static_cast<unsigned char>(route->alpn.size());
+            return SSL_TLSEXT_ERR_OK;
+        } catch(...) {return SSL_TLSEXT_ERR_ALERT_FATAL;}
+        } catch(...) {return SSL_TLSEXT_ERR_ALERT_FATAL;}
     }
     static int client_hello(SSL *ssl, int *alert, void *opaque) {
         auto &owner = *static_cast<Impl *>(opaque);
@@ -196,6 +236,12 @@ struct TlsRouter::Impl {
     }
 
     explicit Impl(const TlsRouterConfig &settings) : config(settings) {
+        if (config.probe_socket.empty() != (config.probe_owner_pid == 0) ||
+            (!config.probe_socket.empty() && config.probe_owner_pid <= 1))
+            throw std::runtime_error("Private relay socket and owner PID required together");
+        if (!config.probe_socket.empty() && !config.probe_routes)
+            config.probe_routes = std::make_shared<ProbeRelayRoutes>();
+        if (handshake_index() < 0) throw std::runtime_error("Cannot prepare TLS admission context");
         if (!config.challenge_only && (!config.http_port || !config.turn_port))
             throw std::runtime_error("Backend ports required");
         if (config.challenge_only && (config.acme_socket.empty() || config.expected_host.empty()))
@@ -216,7 +262,7 @@ struct TlsRouter::Impl {
             TlsCertificateConfig{config.certificate, config.private_key, config.expected_host,
                                  config.ca_file, config.ca_directory, config.allow_certificate_bootstrap},
             [this](SSL_CTX *context) {
-                SSL_CTX_set_alpn_select_cb(context, alpn, nullptr);
+                SSL_CTX_set_alpn_select_cb(context, select_alpn, this);
                 if (!config.acme_socket.empty()) SSL_CTX_set_client_hello_cb(context, client_hello, this);
             });
         sockaddr_storage storage{};
@@ -257,6 +303,8 @@ struct TlsRouter::Impl {
         if (!config.acme_socket.empty())
             challenges = std::make_unique<AcmeChallenges>(config.acme_socket, config.expected_host,
                 [this](SSL_CTX *context) { SSL_CTX_set_client_hello_cb(context, client_hello, this); });
+        if (!config.probe_socket.empty())
+            probe_broker = std::make_unique<ProbeRelayBroker>(config.probe_socket, config.probe_owner_pid, config.probe_routes);
         acceptor = std::thread([this] { accept_loop(); });
     }
     ~Impl() {
@@ -266,6 +314,8 @@ struct TlsRouter::Impl {
         if (stopped.exchange(true))
             return;
         if (challenges) challenges->stop();
+        if (probe_broker) probe_broker->stop();
+        if (config.probe_routes) config.probe_routes->stop();
         shutdown(listener.fd, SHUT_RDWR);
         if (acceptor.joinable())
             acceptor.join();
@@ -302,7 +352,7 @@ struct TlsRouter::Impl {
                 workers.push_back({connection, {}});
                 workers.back().thread = std::thread([this, connection] {
                     try {
-                        serve(*connection);
+                        serve(connection);
                     } catch (...) { /* Close only this connection. */
                     }
                     connection->done = true;
@@ -315,19 +365,21 @@ struct TlsRouter::Impl {
             }
         }
     }
-    void serve(Connection &connection) {
+    void serve(const std::shared_ptr<Connection> &owned) {
+        auto &connection=*owned;
         auto deadline = Clock::now() + std::chrono::seconds(10);
         auto certificate = certificates ? certificates->context() : nullptr;
         if (!certificate && !challenges)
             return;
         Handshake state;
+        state.connection=owned;
         state.application = certificate;
         if (!challenges) state.admission = Admission::Application;
         auto *context = certificate ? certificate->ssl.get() : bootstrap.get();
         std::unique_ptr<SSL, decltype(&SSL_free)> ssl(SSL_new(context), SSL_free);
         if (!ssl || SSL_set_fd(ssl.get(), connection.front.fd) != 1)
             return;
-        if (challenges && SSL_set_ex_data(ssl.get(), handshake_index(), &state) != 1) return;
+        if (SSL_set_ex_data(ssl.get(), handshake_index(), &state) != 1) return;
         SSL_set_mode(ssl.get(),
                      SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         while (!stopped) {
@@ -349,8 +401,13 @@ struct TlsRouter::Impl {
                 !wait_for(connection.front.fd, ssl_wait(error), deadline, stopped))
                 return;
         }
-        Buffer outgoing, incoming;
-        Route route = Route::More;
+        const unsigned char *selected=nullptr;unsigned selected_size=0;
+        SSL_get0_alpn_selected(ssl.get(),&selected,&selected_size);
+        const std::string_view protocol(selected ? reinterpret_cast<const char *>(selected) : "",selected_size);
+        if(protocol.substr(0,probe_prefix.size())==probe_prefix && !state.probe) return;
+        if(state.probe && (protocol!=state.probe->alpn || !state.valid())) return;
+        TlsStreamBuffer outgoing;
+        Route route = state.probe ? Route::Turn : Route::More;
         while (!stopped && route == Route::More) {
             size_t count = 0;
             int result = SSL_read_ex(ssl.get(), outgoing.data.data() + outgoing.size,
@@ -365,7 +422,7 @@ struct TlsRouter::Impl {
                     return;
             }
         }
-        if (stopped || route == Route::Invalid)
+        if (stopped || !state.valid() || route == Route::Invalid)
             return;
         {
             std::lock_guard lock(connection.mutex);
@@ -379,7 +436,8 @@ struct TlsRouter::Impl {
         sockaddr_in backend{};
         backend.sin_family = AF_INET;
         backend.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        backend.sin_port = htons(route == Route::Http ? config.http_port : config.turn_port);
+        backend.sin_port = htons(state.probe ? state.probe->port :
+                                 route == Route::Http ? config.http_port : config.turn_port);
         if (connect(connection.back.fd, reinterpret_cast<sockaddr *>(&backend), sizeof(backend)) <
             0) {
             if (errno != EINPROGRESS || !wait_for(connection.back.fd, POLLOUT, deadline, stopped))
@@ -389,85 +447,9 @@ struct TlsRouter::Impl {
             if (getsockopt(connection.back.fd, SOL_SOCKET, SO_ERROR, &error, &size) || error)
                 return;
         }
-        bool front_eof = false, back_eof = false, back_write_closed = false;
-        short read_wait = POLLIN, write_wait = POLLOUT;
-        while (!stopped) {
-            if (front_eof && outgoing.empty() && !back_write_closed) {
-                shutdown(connection.back.fd, SHUT_WR);
-                back_write_closed = true;
-            }
-            if (back_eof && incoming.empty()) {
-                SSL_shutdown(ssl.get());
-                return;
-            }
-            pollfd fds[2]{{connection.front.fd, 0, 0}, {connection.back.fd, 0, 0}};
-            if (!front_eof && outgoing.empty())
-                fds[0].events |= read_wait;
-            if (!incoming.empty())
-                fds[0].events |= write_wait;
-            if (!back_eof && incoming.empty())
-                fds[1].events |= POLLIN;
-            if (!outgoing.empty())
-                fds[1].events |= POLLOUT;
-            bool pending = !front_eof && outgoing.empty() && SSL_pending(ssl.get()) > 0;
-            int ready = poll(fds, 2, pending ? 0 : 100);
-            if (ready < 0) {
-                if (errno == EINTR)
-                    continue;
-                return;
-            }
-            if (!outgoing.empty() && (fds[1].revents & (POLLOUT | POLLHUP | POLLERR))) {
-                ssize_t n = send(connection.back.fd, outgoing.data.data() + outgoing.offset,
-                                 outgoing.size - outgoing.offset, MSG_NOSIGNAL);
-                if (n > 0)
-                    outgoing.offset += n;
-                else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                    return;
-            }
-            if (!front_eof && outgoing.empty() &&
-                (pending || (fds[0].revents & (read_wait | POLLHUP | POLLERR)))) {
-                size_t n = 0;
-                int result = SSL_read_ex(ssl.get(), outgoing.data.data(), outgoing.data.size(), &n);
-                if (result == 1) {
-                    outgoing.offset = 0;
-                    outgoing.size = n;
-                    read_wait = POLLIN;
-                } else {
-                    int error = SSL_get_error(ssl.get(), result);
-                    if (error == SSL_ERROR_ZERO_RETURN)
-                        front_eof = true;
-                    else if (retryable(error))
-                        read_wait = ssl_wait(error);
-                    else
-                        return;
-                }
-            }
-            if (!incoming.empty() && (fds[0].revents & (write_wait | POLLHUP | POLLERR))) {
-                size_t n = 0;
-                int result = SSL_write_ex(ssl.get(), incoming.data.data() + incoming.offset,
-                                          incoming.size - incoming.offset, &n);
-                if (result == 1) {
-                    incoming.offset += n;
-                    write_wait = POLLOUT;
-                } else {
-                    int error = SSL_get_error(ssl.get(), result);
-                    if (retryable(error))
-                        write_wait = ssl_wait(error);
-                    else
-                        return;
-                }
-            }
-            if (!back_eof && incoming.empty() && (fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
-                ssize_t n = recv(connection.back.fd, incoming.data.data(), incoming.data.size(), 0);
-                if (n > 0) {
-                    incoming.offset = 0;
-                    incoming.size = n;
-                } else if (!n)
-                    back_eof = true;
-                else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                    return;
-            }
-        }
+        if (!state.valid()) return;
+        const auto &cancelled=state.probe ? state.probe->stopped : stopped;
+        forward_tls_stream(ssl.get(), connection.front.fd, connection.back.fd, cancelled, outgoing);
     }
 };
 TlsRouter::TlsRouter(const TlsRouterConfig &config) : impl(std::make_unique<Impl>(config)) {}

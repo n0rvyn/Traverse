@@ -4,6 +4,7 @@ let token, peer, channel, heartbeat, reconnectTimer, sequence = 0, retry = true;
 let iceServers = [];
 let iceTransportPolicy = 'all';
 let lastStats, rtts = [], generation = 0;
+let healthChannel, healthPending, healthFrame, healthEpoch;
 const held = new Set();
 const syntheticModifiers = new Set();
 const modifierGroups = [
@@ -35,17 +36,75 @@ function send(event) {
   channel.send(JSON.stringify({seq:++sequence, sent:performance.now(), event}));
 }
 function release() { send({type:'release'}); held.clear(); syntheticModifiers.clear(); $('inputState').textContent='Click the desktop to control'; }
-function closeLocal() {clearInterval(heartbeat); clearTimeout(reconnectTimer); release(); const old=peer; peer=null; channel=null; if(old)old.close();}
+function closeHealth() {
+  if(healthFrame!==undefined)video.cancelVideoFrameCallback(healthFrame);
+  healthChannel=healthPending=healthFrame=healthEpoch=undefined;
+}
+function closeLocal() {clearInterval(heartbeat); clearTimeout(reconnectTimer); release(); closeHealth(); const old=peer; peer=null; channel=null; if(old)old.close();}
+function requestHealth() {
+  if(healthChannel?.readyState==='open' && peer?.connectionState==='connected' && !healthPending)
+    try{healthChannel.send(JSON.stringify({schemaVersion:1,type:'request'}));}catch{}
+}
+function attachHealth(pc,gen) {
+  const dc=healthChannel=pc.createDataChannel('health',{ordered:true});
+  const current=()=>gen===generation && pc===peer && dc===healthChannel && dc.readyState==='open';
+  const fields=(value,names)=>value && !Array.isArray(value) && typeof value==='object' &&
+    Object.keys(value).length===names.length && names.every(name=>Object.hasOwn(value,name));
+  const integer=(value,positive=false)=>Number.isSafeInteger(value) && value>=(positive?1:0);
+  function nextFrame(pending) {
+    if(!current() || healthPending!==pending)return;
+    const handle=video.requestVideoFrameCallback(async(_,frame)=>{
+      if(healthFrame===handle)healthFrame=undefined;
+      if(!current() || healthPending!==pending)return;
+      try {
+        const stats=await snapshotStats(pc),track=pc.getReceivers().find(receiver=>receiver.track?.kind==='video')?.track;
+        if(!current() || healthPending!==pending)return;
+        if(track?.id!==video.srcObject?.getVideoTracks()[0]?.id || !integer(stats?.incoming?.framesDecoded,true) ||
+           stats.incoming.framesDecoded<=pending.baseline || stats.pair?.state!=='succeeded' ||
+           stats.transport?.dtlsState!=='connected' || !integer(frame.presentedFrames,true)) {nextFrame(pending);return;}
+        const receipt={...pending.challenge,type:'receipt',baselineDecodedFrames:pending.baseline,
+          decodedFrames:stats.incoming.framesDecoded,presentedFrames:frame.presentedFrames,
+          mediaTime:frame.mediaTime,width:frame.width,height:frame.height,
+          transport:{protocol:stats.local?.protocol,localType:stats.local?.candidateType,
+            remoteType:stats.remote?.candidateType,dtlsState:stats.transport.dtlsState}};
+        dc.send(JSON.stringify(receipt));healthPending=undefined;
+      } catch {nextFrame(pending);}
+    });
+    healthFrame=handle;
+  }
+  dc.onopen=requestHealth;
+  dc.onmessage=async event=>{
+    let pending;
+    try {
+      const challenge=JSON.parse(event.data);
+      if(!current() || !fields(challenge,['schemaVersion','type','generation','epoch','nonce','issuedMonotonicMs']) ||
+         challenge.schemaVersion!==1 || challenge.type!=='challenge' || !integer(challenge.generation,true) ||
+         !integer(challenge.issuedMonotonicMs) || typeof challenge.epoch!=='string' || typeof challenge.nonce!=='string' ||
+         !/^[a-f0-9]{32}$/.test(challenge.epoch) || !/^[a-f0-9]{64}$/.test(challenge.nonce) ||
+         typeof video.requestVideoFrameCallback!=='function')return;
+      if(healthEpoch && (healthEpoch.epoch!==challenge.epoch || healthEpoch.generation!==challenge.generation))return;
+      if(healthPending)return;
+      healthEpoch={epoch:challenge.epoch,generation:challenge.generation};
+      pending=healthPending={challenge};
+      const stats=await snapshotStats(pc);
+      if(!current() || healthPending!==pending)return;
+      if(!integer(stats?.incoming?.framesDecoded)) {healthPending=undefined;return;}
+      pending.baseline=stats.incoming.framesDecoded;nextFrame(pending);
+    } catch {if(healthPending===pending)healthPending=undefined;}
+  };
+  dc.onclose=()=>{if(dc===healthChannel)closeHealth();};
+}
 async function connect() {
   const gen=++generation;
   closeLocal(); status('Connecting…'); lastStats=undefined;
   const pc=peer=new RTCPeerConnection({iceServers,iceTransportPolicy,bundlePolicy:'max-bundle'});
   pc.addTransceiver('video',{direction:'recvonly'});
   const dc=channel=pc.createDataChannel('input',{ordered:true});
+  attachHealth(pc,gen);
   dc.onopen=()=>{ if(gen!==generation)return; status('Connected',true); heartbeat=setInterval(()=>send({type:'heartbeat'}),500); };
   dc.onmessage=e=>{const m=JSON.parse(e.data); if(typeof m.sent==='number')rtts.push(performance.now()-m.sent);};
   dc.onclose=()=>{if(gen===generation && peer===pc)lost();};
-  pc.ontrack=e=>{video.srcObject=new MediaStream([e.track]);};
+  pc.ontrack=e=>{if(gen===generation && peer===pc)video.srcObject=new MediaStream([e.track]);};
   pc.onconnectionstatechange=()=>{if(gen===generation && ['failed','disconnected','closed'].includes(pc.connectionState))lost();};
   try {
     await pc.setLocalDescription(await pc.createOffer());
@@ -78,16 +137,16 @@ video.addEventListener('keydown',e=>{if(!keys.has(e.code))return;e.preventDefaul
 video.addEventListener('keyup',e=>{if(!keys.has(e.code))return;e.preventDefault();held.delete(e.code);send({type:'key',code:e.code,down:false});releaseSyntheticModifiers();});
 video.onblur=release;window.addEventListener('blur',release);document.addEventListener('visibilitychange',()=>{if(document.hidden)release();});window.addEventListener('pagehide',()=>{release();peer?.close();});
 video.onresize=()=>{$('resolution').textContent=`${video.videoWidth} × ${video.videoHeight}`;};
-async function snapshotStats() {
-  if(!peer)return null;
-  const report=await peer.getStats();let incoming,pair,transport;
+async function snapshotStats(pc=peer) {
+  if(!pc)return null;
+  const report=await pc.getStats();let incoming,pair,transport;
   report.forEach(s=>{if(s.type==='inbound-rtp'&&s.kind==='video')incoming=s;if(s.type==='transport')transport=s;});
   if(transport?.selectedCandidatePairId)pair=report.get(transport.selectedCandidatePairId);
   if(!pair)report.forEach(s=>{if(s.type==='candidate-pair'&&s.state==='succeeded'&&s.nominated)pair=s;});
-  return {incoming,pair,local:pair&&report.get(pair.localCandidateId),remote:pair&&report.get(pair.remoteCandidateId),rtts:[...rtts],browser:navigator.userAgent};
+  return {incoming,pair,transport,local:pair&&report.get(pair.localCandidateId),remote:pair&&report.get(pair.remoteCandidateId),rtts:[...rtts],browser:navigator.userAgent};
 }
 // Read-only diagnostics used by the measurement harness; no privileged control API.
 window.traverseStats=snapshotStats;
-setInterval(async()=>{try{const s=await snapshotStats();if(!s?.incoming)return;const v=s.incoming;let rate='';if(lastStats){const dt=(v.timestamp-lastStats.timestamp)/1000;rate=`${((v.bytesReceived-lastStats.bytesReceived)*8/dt/1e6).toFixed(2)} Mb/s`;}$('metrics').textContent=`${v.framesPerSecond??0} fps · ${rate} · input RTT ${rtts.length?Math.round(rtts.at(-1)):'–'} ms · ${s.remote?.candidateType??'ICE'}`;lastStats=v;}catch{}},1000);
+setInterval(async()=>{try{requestHealth();const s=await snapshotStats();if(!s?.incoming)return;const v=s.incoming;let rate='';if(lastStats){const dt=(v.timestamp-lastStats.timestamp)/1000;rate=`${((v.bytesReceived-lastStats.bytesReceived)*8/dt/1e6).toFixed(2)} Mb/s`;}$('metrics').textContent=`${v.framesPerSecond??0} fps · ${rate} · input RTT ${rtts.length?Math.round(rtts.at(-1)):'–'} ms · ${s.remote?.candidateType??'ICE'}`;lastStats=v;}catch{}},1000);
 status('Not connected');
 $('connect').disabled=false;

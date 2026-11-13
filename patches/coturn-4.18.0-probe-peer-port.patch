@@ -1,0 +1,190 @@
+--- a/src/apps/relay/mainrelay.c
++++ b/src/apps/relay/mainrelay.c
+@@ -265,7 +265,8 @@
+     ///////// Stateless nonce /////////
+     true, /* stateless-nonce */
+     {0},  /* stateless_nonce_key (generated at startup when enabled) */
+-    false /* stateless_nonce_key_set */
++    false, /* stateless_nonce_key_set */
++    0      /* probe_peer_port: ordinary TURN policy unchanged */
+ };
+ 
+ //////////////// OpenSSL Init //////////////////////
+@@ -1338,6 +1339,7 @@
+     "allocations\n"
+     "						drops to this value or below. Default is 0 (wait until all "
+     "allocations are gone).\n"
++    " --probe-peer-port=<port>\t\t\tRestrict private synthetic probe peers to one UDP port; unset keeps ordinary TURN policy.\n"
+     " --allowed-peer-ip=<ip[-ip]> 			Specifies an ip or range of ips that are explicitly allowed to "
+     "connect to the \n"
+     "						turn server. Multiple allowed-peer-ip can be set.\n"
+@@ -1676,7 +1678,8 @@
+   INCLUDE_REASON_STRING_OPT,
+   OPT_MULTIPLEX_PEER = 800,
+   OPT_MULTIPLEX_PEER_PORT = 801,
+-  OPT_MULTIPLEX_PEER_MAX_PEERS = 802
++  OPT_MULTIPLEX_PEER_MAX_PEERS = 802,
++  OPT_PROBE_PEER_PORT = 803
+ };
+ 
+ struct myoption {
+@@ -1841,6 +1844,7 @@
+     {"multiplex-peer", no_argument, NULL, OPT_MULTIPLEX_PEER},
+     {"multiplex-peer-port", required_argument, NULL, OPT_MULTIPLEX_PEER_PORT},
+     {"multiplex-peer-max-peers", required_argument, NULL, OPT_MULTIPLEX_PEER_MAX_PEERS},
++    {"probe-peer-port", required_argument, NULL, OPT_PROBE_PEER_PORT},
+     {"version", optional_argument, NULL, VERSION_OPT},
+     {"syslog-facility", required_argument, NULL, SYSLOG_FACILITY_OPT},
+     {"cpus", required_argument, NULL, CPUS_OPT},
+@@ -2706,6 +2710,13 @@
+     turn_params.udp_gso = get_bool_value(value);
+     break;
+ #endif
++  case OPT_PROBE_PEER_PORT:
++    turn_params.probe_peer_port = get_port_value(value);
++    if (!turn_params.probe_peer_port) {
++      TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR, "--probe-peer-port must be 1-65535\n");
++      exit(1);
++    }
++    break;
+   case OPT_MULTIPLEX_PEER:
+     turn_params.multiplex_peer = true;
+     break;
+@@ -3638,6 +3649,12 @@
+   turn_params.udp_sendmmsg = turn_params.multiplex_peer;
+ #endif
+ 
++  if (turn_params.probe_peer_port && (turn_params.server_relay || turn_params.multiplex_peer)) {
++    TURN_LOG_FUNC(TURN_LOG_LEVEL_ERROR,
++                  "CONFIG ERROR: --probe-peer-port cannot use --server-relay or --multiplex-peer\n");
++    exit(1);
++  }
++
+   if (turn_params.rfc3489_compatibility) {
+     TURN_LOG_FUNC(TURN_LOG_LEVEL_WARNING,
+                   "DEPRECATED: --rfc3489-compatibility enables handling of obsolete RFC 3489 (\"classic\" STUN) "
+@@ -4492,6 +4509,10 @@
+ static void shutdown_handler(evutil_socket_t sock, short events, void *args) {
+   TURN_LOG_FUNC(TURN_LOG_LEVEL_INFO, "Terminating on signal %d\n", sock);
+   turn_params.stop_turn_server = true;
++  /* A synthetic probe must release its port before controller admission. */
++  if (turn_params.probe_peer_port && turn_params.listener.event_base) {
++    event_base_loopbreak(turn_params.listener.event_base);
++  }
+ 
+   UNUSED_ARG(events);
+   UNUSED_ARG(args);
+--- a/src/apps/relay/mainrelay.h
++++ b/src/apps/relay/mainrelay.h
+@@ -384,6 +384,8 @@
+    * across a fleet); false means an ephemeral random key is generated at
+    * startup. */
+   bool stateless_nonce_key_set;
++  /* Immutable destination port for the private synthetic probe role. */
++  uint16_t probe_peer_port;
+ } turn_params_t;
+ 
+ extern turn_params_t turn_params;
+--- a/src/apps/relay/netengine.c
++++ b/src/apps/relay/netengine.c
+@@ -1388,6 +1388,7 @@
+                                      prom_inc_unauthenticated_401_response,
+                                      prom_inc_unauthenticated_401_dropped_response);
+   set_auth_credential_failure_metric_cb(&(rs->server), prom_inc_auth_credential_failure);
++  rs->server.probe_peer_port = turn_params.probe_peer_port;
+   set_stateless_nonce(&(rs->server), &turn_params.stateless_nonce, turn_params.stateless_nonce_key,
+                       sizeof(turn_params.stateless_nonce_key));
+   if (to_set_rfc5780) {
+--- a/src/server/ns_turn_server.c
++++ b/src/server/ns_turn_server.c
+@@ -305,6 +305,13 @@
+ 
+ /////////////////// Peer addr check /////////////////////////////
+ 
++/* TURN permissions are IP-scoped. The synthetic probe role additionally
++ * constrains the actual datagram source/destination at each forwarding path. */
++static bool probe_peer_port_allowed(const turn_turnserver *server, const ioa_addr *peer) {
++  return server && (!server->probe_peer_port ||
++                    (peer && addr_get_port(peer) == server->probe_peer_port));
++}
++
+ static int good_peer_addr(turn_turnserver *server, const char *realm, ioa_addr *peer_addr, turnsession_id session_id) {
+ #define CHECK_REALM(r)                                                                                                 \
+   if ((r)[0] && realm && realm[0] && strcmp((r), realm))                                                               \
+@@ -1251,7 +1258,8 @@
+             if (!transport) {
+               *err_code = 442;
+             }
+-            if ((transport == STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE) && *(server->no_tcp_relay)) {
++            if ((transport == STUN_ATTRIBUTE_TRANSPORT_TCP_VALUE) &&
++                (*(server->no_tcp_relay) || server->probe_peer_port)) {
+               *err_code = 442;
+               *reason = (const uint8_t *)"TCP Transport is not allowed by the TURN Server configuration";
+             } else if ((transport == STUN_ATTRIBUTE_TRANSPORT_UDP_VALUE) && *(server->no_udp_relay)) {
+@@ -2951,6 +2959,9 @@
+       *err_code = 400;
+       *reason = (const uint8_t *)"Bad channel number";
+ 
++    } else if (!probe_peer_port_allowed(server, &peer_addr)) {
++      *err_code = 403;
++      *reason = (const uint8_t *)"Forbidden peer port";
+     } else {
+ 
+       ch_info *chn = allocation_get_ch_info(a, chnum);
+@@ -3292,6 +3303,9 @@
+ 
+     } else if (!addr_any(&peer_addr) && len >= 0) {
+ 
++      if (!probe_peer_port_allowed(server, &peer_addr)) {
++        return 0; /* Send indications never get an error response. */
++      }
+       turn_permission_info *tinfo = NULL;
+ 
+       if (!(server->server_relay)) {
+@@ -3957,7 +3971,7 @@
+ 
+   if (stun_is_request_str(ioa_network_buffer_data(in_buffer->nbh), ioa_network_buffer_get_size(in_buffer->nbh))) {
+ 
+-    if ((method == STUN_METHOD_BINDING) && (*(server->no_stun))) {
++    if ((method == STUN_METHOD_BINDING) && (*(server->no_stun) || server->probe_peer_port)) {
+ 
+       no_response = 1;
+       if (server->verbose) {
+@@ -4557,7 +4571,7 @@
+ 
+       ch_info *chn = allocation_get_ch_info(a, chnum);
+ 
+-      if (!chn) {
++      if (!chn || !probe_peer_port_allowed((turn_turnserver *)ss->server, &chn->peer_addr)) {
+         return -1;
+       }
+ 
+@@ -5177,7 +5191,7 @@
+ 
+   } else if (old_stun_is_command_message_str(ioa_network_buffer_data(in_buffer->nbh),
+                                              ioa_network_buffer_get_size(in_buffer->nbh), &old_stun_cookie) &&
+-             !(*(server->no_stun)) && *(server->rfc3489_compatibility)) {
++             !(*(server->no_stun)) && !server->probe_peer_port && *(server->rfc3489_compatibility)) {
+ 
+     ioa_network_buffer_handle nbh = ioa_network_buffer_allocate(server->e);
+     int resp_constructed = 0;
+@@ -5394,7 +5408,7 @@
+ 
+   turn_turnserver *server = (turn_turnserver *)(ss->server);
+ 
+-  if (!server) {
++  if (!server || !probe_peer_port_allowed(server, &in_buffer->src_addr)) {
+     return;
+   }
+ 
+--- a/src/server/ns_turn_server.h
++++ b/src/server/ns_turn_server.h
+@@ -153,6 +153,8 @@
+   ioa_addr external_ip;
+   bool *allow_loopback_peers;
+   bool *no_multicast_peers;
++  /* Set once before listeners start. Zero preserves ordinary TURN behavior. */
++  uint16_t probe_peer_port;
+   send_turn_session_info_cb send_turn_session_info;
+   send_https_socket_cb send_https_socket;
+   int sock_buf_size;

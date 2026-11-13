@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
                 key != "--turn-port" && key != "--cert" && key != "--key" &&
                 key != "--expected-domain" && key != "--trust-file" && key != "--trust-directory" &&
                 key != "--status-file" &&
+                key != "--probe-socket" && key != "--probe-owner-pid" &&
                 key != "--acme-socket" && key != "--certificate-bootstrap" && key != "--challenge-only" &&
                 key != "--supervisor-pid")
                 throw std::runtime_error("Unknown option");
@@ -56,6 +57,19 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Supervisor unavailable");
         }
         traverse::TlsRouterConfig config;
+        if (args.count("--probe-socket")) {
+            config.probe_socket = args.at("--probe-socket");
+            if (config.probe_socket.empty()) throw std::runtime_error("Private relay socket required");
+        }
+        if (args.count("--probe-owner-pid")) {
+            const auto &text = args.at("--probe-owner-pid");
+            if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("Invalid relay owner PID");
+            auto value = std::stoul(text);
+            if (value <= 1 || value > static_cast<unsigned>(std::numeric_limits<pid_t>::max()))
+                throw std::runtime_error("Invalid relay owner PID");
+            config.probe_owner_pid = static_cast<pid_t>(value);
+        }
         if (args.count("--challenge-only")) {
             const auto &value = args.at("--challenge-only");
             if (value != "true" && value != "false") throw std::runtime_error("Invalid challenge-only mode");

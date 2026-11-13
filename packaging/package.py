@@ -222,6 +222,13 @@ def main():
     args=parser.parse_args();stage=args.stage.resolve();runtime=args.runtime.resolve();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     prefix=stage/'opt/traverse';libdir=prefix/'lib';libdir.mkdir(parents=True,exist_ok=True)
     manifest=json.loads((ROOT/'packaging/runtime-manifest.json').read_text())
+    for source in manifest['sources']:
+        for patch in source.get('localPatches', []):
+            path=Path(patch['file'])
+            if path.is_absolute() or '..' in path.parts or path.parts[:1] != ('patches',):
+                raise ValueError('Unsafe local patch path')
+            if hashlib.sha256((ROOT/path).read_bytes()).hexdigest()!=patch['sha256']:
+                raise ValueError('Local patch digest mismatch: '+source['name'])
     issuer_build=json.loads(args.issuer_build.read_text())
     issuer_binary=prefix/'libexec/traverse/traverse-issuer'
     if issuer_build['binarySha256']!=hashlib.sha256(issuer_binary.read_bytes()).hexdigest():
@@ -333,6 +340,8 @@ def main():
     manifest['sourceSnapshot']=source_snapshot(ROOT,manifest['sourceCommit'])
     shutil.copy2(ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',prefix/'share/traverse/libnice.patch')
     shutil.copy2(ROOT/'patches/libnice-0.1.24-dns-gathering-completion.patch',prefix/'share/traverse/libnice-dns.patch')
+    shutil.copy2(ROOT/'patches/libnice-0.1.24-probe-peer-allowlist.patch',prefix/'share/traverse/libnice-probe-peer.patch')
+    shutil.copy2(ROOT/'patches/coturn-4.18.0-probe-peer-port.patch',prefix/'share/traverse/coturn-probe-peer-port.patch')
     shutil.copy2(ROOT/'patches/gstreamer-1.26.11-unixfd-socket-identity.patch',prefix/'share/traverse/unixfd.patch')
     shutil.copy2(ROOT/'patches/gstreamer-1.26.11-unixfd-clock-offset.patch',prefix/'share/traverse/unixfd-clock.patch')
     shutil.copy2(ROOT/'patches/pipewire-1.6.0-unset-cycle-timestamp.patch',prefix/'share/traverse/pipewire.patch')
@@ -411,7 +420,7 @@ if [ "$1" = 0 ]; then rm -f /opt/traverse/share/traverse/registry.bin; fi
         for file in sorted(args.sources.iterdir()):
             if file.is_file():archive.add(file,arcname=file.name,filter=normalize)
             elif file.name=='distribution-sources':archive.add(file,arcname=file.name,filter=normalize)
-        for file in [ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'patches/libnice-0.1.24-dns-gathering-completion.patch',ROOT/'patches/pebble-v2.10.1-authz-reuse-percent.patch',ROOT/'patches/gstreamer-1.26.11-unixfd-socket-identity.patch',ROOT/'patches/gstreamer-1.26.11-unixfd-clock-offset.patch',ROOT/'patches/pipewire-1.6.0-unset-cycle-timestamp.patch',ROOT/'patches/pipewire-1.6.0-pretransport-mix-cleanup.patch',ROOT/'patches/pipewire-1.6.0-cancel-on-core-disconnect.patch',ROOT/'patches/libei-1.5.0-setup-fd-ownership.patch',ROOT/'patches/libei-1.5.0-pause-emulating-device.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/build-issuer.py',ROOT/'packaging/fetch-sources.py',ROOT/'packaging/runtime-manifest.json',args.issuer_build]:
+        for file in [ROOT/'patches/libnice-0.1.24-probe-peer-allowlist.patch',ROOT/'patches/coturn-4.18.0-probe-peer-port.patch',ROOT/'patches/libnice-0.1.24-passive-tcp-reuse.patch',ROOT/'patches/libnice-0.1.24-dns-gathering-completion.patch',ROOT/'patches/pebble-v2.10.1-authz-reuse-percent.patch',ROOT/'patches/gstreamer-1.26.11-unixfd-socket-identity.patch',ROOT/'patches/gstreamer-1.26.11-unixfd-clock-offset.patch',ROOT/'patches/pipewire-1.6.0-unset-cycle-timestamp.patch',ROOT/'patches/pipewire-1.6.0-pretransport-mix-cleanup.patch',ROOT/'patches/pipewire-1.6.0-cancel-on-core-disconnect.patch',ROOT/'patches/libei-1.5.0-setup-fd-ownership.patch',ROOT/'patches/libei-1.5.0-pause-emulating-device.patch',ROOT/'packaging/build-runtime.sh',ROOT/'packaging/build-issuer.py',ROOT/'packaging/fetch-sources.py',ROOT/'packaging/runtime-manifest.json',args.issuer_build]:
             archive.add(file,arcname=file.name,filter=normalize)
     artifacts=[p for p in out.iterdir() if p.is_file() and p.name!='SHA256SUMS']
     (out/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in sorted(artifacts)))

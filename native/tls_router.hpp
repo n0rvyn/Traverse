@@ -2,8 +2,10 @@
 #include "tls_certificate.hpp"
 #include <memory>
 #include <string>
+#include <sys/types.h>
 
 namespace traverse {
+class ProbeRelayRoutes;
 struct TlsRouterConfig {
     std::string address = "127.0.0.1", certificate, private_key;
     std::string expected_host;
@@ -12,6 +14,9 @@ struct TlsRouterConfig {
     bool allow_certificate_bootstrap = false;
     bool challenge_only = false;
     unsigned short port = 0, http_port = 0, turn_port = 0;
+    std::shared_ptr<ProbeRelayRoutes> probe_routes;
+    std::string probe_socket;
+    pid_t probe_owner_pid = 0;
 };
 // Fixed loopback backends; routing never uses a client-supplied destination.
 class TlsRouter {

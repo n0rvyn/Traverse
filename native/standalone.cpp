@@ -554,6 +554,9 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                               (prefix / "share/traverse/web").string(),
                               "--owner-socket",
                               (sockets.directory / "s").string(),
+                              "--media-readiness",
+                              "--media-probe-socket",
+                              (sockets.directory / "m").string(),
                               "--base-path",
                               settings.base_path,
                               "--udp-port",
@@ -578,6 +581,10 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                                                    std::to_string(http.port),
                                                    "--turn-port",
                                                    std::to_string(turn.port),
+                                                   "--probe-socket",
+                                                   (sockets.directory / "m").string(),
+                                                   "--probe-owner-pid",
+                                                   std::to_string(children.service->id()),
                                                    "--cert",
                                                    settings.certificates.certificate,
                                                    "--key",
@@ -672,6 +679,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         auto state = ipc.call("/state");
         if (state.value("pid", pid_t{-1}) != children.adapter->id())
             throw std::runtime_error("Desktop adapter ownership changed");
+        if(children.readiness)children.readiness->controller_priority(state.value("paired",false));
         return state.value("armed", false);
     };
     // Local listener startup keeps its existing deadline; CA validation is an
@@ -723,8 +731,8 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         children.readiness_network=std::make_unique<ReadinessNetwork>();
         children.network_observation_healthy=children.readiness_network->poll().healthy;
         children.readiness=std::make_unique<ReadinessManager>(*settings.observer,
-            binary_directory/"traverse-readiness-agent",(sockets.directory/"s").string(),children.service->id());
-        children.readiness->start();
+            binary_directory/"traverse-readiness-agent",(sockets.directory/"s").string(),children.service->id(),settings.port);
+        if(owner_armed())children.readiness->start();
     }
     std::optional<TlsCertificateStatus> checked_certificate;
     if(children.readiness)checked_certificate=read_tls_certificate_status(certificate_status,children.frontend->id());

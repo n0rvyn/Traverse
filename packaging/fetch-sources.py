@@ -36,6 +36,12 @@ def main():
     dest = Path(sys.argv[1]); dest.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((ROOT/'packaging/runtime-manifest.json').read_text())
     for source in manifest['sources']:
+        for patch in source.get('localPatches', []):
+            path = Path(patch['file'])
+            if path.is_absolute() or '..' in path.parts or path.parts[:1] != ('patches',):
+                raise ValueError('Unsafe local patch path')
+            if hashlib.sha256((ROOT/path).read_bytes()).hexdigest() != patch['sha256']:
+                raise ValueError('Local patch digest mismatch: '+source['name'])
         archive = dest/source['url'].split('/')[-1]
         if not archive.exists():
             subprocess.run(['curl','--fail','--location','--retry','3','--retry-all-errors','--output',str(archive),source['url']],check=True)

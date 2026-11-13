@@ -32,6 +32,7 @@ build_meson gstreamer -Dtools=enabled
 build_meson gst-plugins-base -Dapp=enabled -Dvideorate=enabled -Dvideoconvertscale=enabled -Dvideotestsrc=enabled -Dorc=enabled
 patch --forward -p1 -d "$work/sources/libnice" < "$root/patches/libnice-0.1.24-passive-tcp-reuse.patch"
 patch --forward --fuzz=0 -p1 -d "$work/sources/libnice" < "$root/patches/libnice-0.1.24-dns-gathering-completion.patch"
+patch --forward --fuzz=0 -p1 -d "$work/sources/libnice" < "$root/patches/libnice-0.1.24-probe-peer-allowlist.patch"
 build_meson libnice -Dgstreamer=enabled -Dcrypto-library=openssl
 build_meson gst-plugins-good -Dvpx=enabled -Drtp=enabled -Drtpmanager=enabled -Dximagesrc=enabled -Dximagesrc-xshm=enabled -Dximagesrc-xfixes=enabled -Dximagesrc-xdamage=enabled -Dorc=enabled
 patch --forward -p1 -d "$work/sources/gst-plugins-bad" < "$root/patches/gstreamer-1.26.11-unixfd-socket-identity.patch"
@@ -57,11 +58,15 @@ cmake -S "$work/sources/cpp-httplib" -B "$work/build-httplib" -DCMAKE_INSTALL_PR
   -DHTTPLIB_COMPILE=ON -DBUILD_SHARED_LIBS=ON -DHTTPLIB_REQUIRE_OPENSSL=ON -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=OFF
 cmake --build "$work/build-httplib" -j "${BUILD_JOBS:-2}"
 cmake --install "$work/build-httplib"
+patch --forward --fuzz=0 -p1 -d "$work/sources/coturn" < "$root/patches/coturn-4.18.0-probe-peer-port.patch"
 cmake -S "$work/sources/coturn" -B "$work/build-coturn" -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$prefix" -DWITH_MYSQL=OFF -DBUILD_TESTING=OFF
 cmake --build "$work/build-coturn" --target turnserver -j "${BUILD_JOBS:-2}"
 # The source archive retains examples/docs; only the server is part of our runtime.
 install -m755 "$work/build-coturn/bin/turnserver" "$prefix/bin/turnserver"
+# Private UID65534 relay authority witnesses; default-off controller behavior is
+# the red control, then the same binary must block all wrong-port forwarding.
+python3 "$root/tests/readiness_turn_test.py" "$prefix/bin/turnserver"
 # PyGObject is distribution-owned; the Meson-only venv deliberately has no system site packages.
 cmake -S "$root/native" -B "$work/build-native" -G Ninja -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/traverse -DPython3_EXECUTABLE=/usr/bin/python3
 cmake --build "$work/build-native" -j "${BUILD_JOBS:-2}"

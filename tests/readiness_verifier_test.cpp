@@ -47,7 +47,53 @@ int main() {
         }
         bad=response;bad["receipt"]["token"]=parsed.lease.token;
         rejected([&]{traverse::parse_readiness_receipt(bad,parsed.lease);});
-        std::cout<<"Verifier target, numeric pin, version and exact receipt contracts passed\n";
+        json candidate={{"address","127.0.0.1"},{"port",12345},{"type",0},{"protocol","udp"}};
+        json media={{"schemaVersion",1},{"peer",std::string(32,'e')},{"port",12345},{"type","received"},
+            {"nonce",parsed.lease.nonce},{"videoDecoded",true},{"dataVerified",true},{"dtlsConnected",true},
+            {"transport",{{"local",candidate},{"remote",candidate}}}};
+        json receipt={{"schemaVersion",2},{"instance",parsed.lease.instance},{"id",parsed.lease.id},
+            {"nonce",parsed.lease.nonce},{"mode","direct"},{"observerPort",12345},
+            {"observedMonotonicMs",123},{"media",media},{"cleanup",true}};
+        require(traverse::parse_media_receipt(receipt,parsed.lease,"direct",12345)==receipt,"Valid media rejected");
+        auto relay=receipt;relay["mode"]="relay";relay["media"]["transport"]["local"]["type"]=3;
+        require(traverse::parse_media_receipt(relay,parsed.lease,"relay",12345)==relay,"Valid relay rejected");
+        for(auto key:{"instance","id","nonce"}) {
+            bad=receipt;bad[key]=std::string(key==std::string("nonce")?64:32,'0');
+            rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+        }
+        for(auto key:{"videoDecoded","dataVerified","dtlsConnected"}) {
+            for(auto value:std::vector<json>{false,1,"true"}) {
+                bad=receipt;bad["media"][key]=value;
+                rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+            }
+        }
+        for(auto pointer:{"/schemaVersion","/cleanup","/observerPort","/observedMonotonicMs",
+                          "/media/port","/media/schemaVersion","/media/transport/local/port","/media/transport/remote/type"}) {
+            bad=receipt;bad[json::json_pointer(pointer)]=1.5;
+            rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+        }
+        bad=receipt;bad["media"]["nonce"]=std::string(64,'0');
+        rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+        bad=receipt;bad["media"]["transport"]["local"]["type"]=3;
+        rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+        bad=receipt;bad["media"]["transport"]["remote"]["address"]="hostname.test";
+        rejected([&]{traverse::parse_media_receipt(bad,parsed.lease,"direct",12345);});
+        auto source=media;source["videoDecoded"]=false;source["peer"]=parsed.lease.id;
+        require(traverse::validate_media_received(source,parsed.lease.nonce,false,parsed.lease.id)==source,"Source rejected");
+        traverse::validate_media_exchange(receipt,source,parsed.lease,"direct",12345,12345);
+        traverse::validate_media_exchange(relay,source,parsed.lease,"relay",12345,12345);
+        auto unowned=source;unowned["transport"]["remote"]["port"]=12346;
+        rejected([&]{traverse::validate_media_exchange(relay,unowned,parsed.lease,"relay",12345,12345);});
+        unowned=source;unowned["nonce"]=std::string(64,'0');
+        rejected([&]{traverse::validate_media_exchange(receipt,unowned,parsed.lease,"direct",12345,12345);});
+        // Different NAT views do not invalidate the same fixed-port direct path.
+        auto nat=source;nat["transport"]["local"]["address"]="192.0.2.10";
+        nat["transport"]["remote"]["address"]="198.51.100.20";
+        traverse::validate_media_exchange(receipt,nat,parsed.lease,"direct",12345,12345);
+        rejected([&]{traverse::validate_media_received(media,parsed.lease.nonce,false,parsed.lease.id);});
+        rejected([&]{traverse::parse_media_receipt(receipt,parsed.lease,"relay",12345);});
+        rejected([&]{traverse::parse_media_receipt(receipt,parsed.lease,"direct",12346);});
+        std::cout<<"Verifier target, numeric pin, version and exact HTTP/media receipt contracts passed\n";
         return 0;
     }catch(const std::exception &error){std::cerr<<error.what()<<'\n';return 1;}
 }

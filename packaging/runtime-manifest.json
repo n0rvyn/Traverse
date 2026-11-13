@@ -36,7 +36,14 @@
       "name": "libnice",
       "version": "0.1.24",
       "url": "https://libnice.freedesktop.org/releases/libnice-0.1.24.tar.gz",
-      "sha256": "cfb5e8e778534f2f5b3c6f4958a1eb057c6b95c537c0f100817a537cf5d64fcc"
+      "sha256": "cfb5e8e778534f2f5b3c6f4958a1eb057c6b95c537c0f100817a537cf5d64fcc",
+      "localPatches": [
+        {
+          "file": "patches/libnice-0.1.24-probe-peer-allowlist.patch",
+          "sha256": "6f699679ca30c154f08c766dd3ca84e3d5ada5027babfc873a4be5e1d586b3a5",
+          "scope": "Opt-in frozen numeric UDP peer tuples for synthetic probes; unset preserves ordinary controller ICE."
+        }
+      ]
     },
     {
       "name": "cpp-httplib",
@@ -53,6 +60,13 @@
       "build_exclude_paths": [
         "examples",
         "man"
+      ],
+      "localPatches": [
+        {
+          "file": "patches/coturn-4.18.0-probe-peer-port.patch",
+          "sha256": "fb82e07b37b26f5e6cfedea7cf47b2d6daeb3342e5b50d4c83a929b7f435134a",
+          "scope": "Opt-in private synthetic probe peer UDP port enforcement; unset preserves controller policy."
+        }
       ]
     },
     {
@@ -100,7 +114,11 @@
     "dtlsenc",
     "srtpenc",
     "sctpenc",
-    "pipewiresrc"
+    "pipewiresrc",
+    "videotestsrc",
+    "rtpvp8depay",
+    "vp8dec",
+    "appsink"
   ],
   "dynamic_provider_packages": [
     {

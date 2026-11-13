@@ -2,6 +2,8 @@
 #include "endpoint_settings.hpp"
 #include "owner_state.hpp"
 #include "readiness_challenge.hpp"
+#include "readiness_media_service.hpp"
+#include "active_health.hpp"
 #include <initializer_list>
 #include <arpa/inet.h>
 #include <gst/sdp/sdp.h>
@@ -129,6 +131,10 @@ class Peer : public std::enable_shared_from_this<Peer> {
     bool gathered = false, cleaned = false;
     inline static std::atomic<unsigned long> next_generation{0};
     unsigned long generation = ++next_generation;
+    traverse::ActiveHealth health{generation};
+    GstWebRTCDataChannel *health_channel=nullptr;
+    mutable std::mutex health_mutex;
+    bool health_open=false;
     std::atomic<int> connection_state{GST_WEBRTC_PEER_CONNECTION_STATE_NEW};
     std::atomic<bool> control_open{false}, control_closed{false};
     using Weak = std::weak_ptr<Peer>;
@@ -179,12 +185,17 @@ class Peer : public std::enable_shared_from_this<Peer> {
             gst_webrtc_session_description_free(description);
         }
     }
-    void input(const gchar *message) {
+    void reject_input_locked() {
+        rejected++;
+        try {
+            json release={{"type","release"}};ipc.call("/input",&release,token);
+        } catch(...) {}
+    }
+    void input(const json &data) {
         std::lock_guard lock(input_mutex);
         if (!active)
             return;
         try {
-            auto data = json::parse(message);
             auto event = data.at("event");
             if (!event.is_object())
                 throw std::runtime_error("Expected input object");
@@ -199,15 +210,60 @@ class Peer : public std::enable_shared_from_this<Peer> {
                     g_error_free(error);
             }
         } catch (const std::exception &) {
-            rejected++;
-            try {
-                json release = {{"type", "release"}};
-                ipc.call("/input", &release, token);
-            } catch (...) {
-            }
+            reject_input_locked();
         }
     }
+    void input_channel_message(const gchar *message) {
+        json value;
+        try {
+            value=json::parse(message);
+        } catch(const std::exception &) {
+            std::lock_guard lock(input_mutex);if(active)reject_input_locked();return;
+        }
+        if(value.is_object() && value.contains("schemaVersion") && value.contains("type") &&
+           (value.at("type")=="request" || value.at("type")=="receipt" || value.at("type")=="challenge")) {
+            std::lock_guard lock(health_mutex);++health.rejected;return;
+        }
+        input(value);
+    }
+    void health_message(const gchar *message) {
+        std::optional<json> response;
+        GstWebRTCDataChannel *target=nullptr;
+        {
+            std::lock_guard lock(health_mutex);
+            if(!active || !health_open || !health_channel)return;
+            try {
+                response=health.receive(json::parse(message),connection_state.load()==GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED);
+                if(response)target=GST_WEBRTC_DATA_CHANNEL(g_object_ref(health_channel));
+            } catch(...) {++health.rejected;}
+        }
+        if(target) {
+            auto text=response->dump();GError *error=nullptr;
+            gst_webrtc_data_channel_send_string_full(target,text.c_str(),&error);
+            if(error)g_error_free(error);
+            g_object_unref(target);
+        }
+    }
+    void attach_health(GstWebRTCDataChannel *c) {
+        std::unique_lock lock(health_mutex);
+        if(!active || health_channel){lock.unlock();gst_webrtc_data_channel_close(c);return;}
+        health_channel=GST_WEBRTC_DATA_CHANNEL(g_object_ref(c));
+        g_signal_connect_data(c,"on-open",G_CALLBACK(+[](GstWebRTCDataChannel *,gpointer d){
+            if(auto p=get(d)){std::lock_guard guard(p->health_mutex);if(p->active)p->health_open=true;}
+        }),new Weak(shared_from_this()),destroy_weak,GConnectFlags(0));
+        g_signal_connect_data(c,"on-message-string",G_CALLBACK(+[](GstWebRTCDataChannel *,gchar *message,gpointer d){
+            if(auto p=get(d))p->health_message(message);
+        }),new Weak(shared_from_this()),destroy_weak,GConnectFlags(0));
+        g_signal_connect_data(c,"on-close",G_CALLBACK(+[](GstWebRTCDataChannel *,gpointer d){
+            if(auto p=get(d)){std::lock_guard guard(p->health_mutex);p->health_open=false;p->health.close();}
+        }),new Weak(shared_from_this()),destroy_weak,GConnectFlags(0));
+        GstWebRTCDataChannelState initial;g_object_get(c,"ready-state",&initial,nullptr);
+        health_open=initial==GST_WEBRTC_DATA_CHANNEL_STATE_OPEN;
+    }
     void data_channel(GstWebRTCDataChannel *c) {
+        gchar *name=nullptr;g_object_get(c,"label",&name,nullptr);
+        bool is_health=name && std::string(name)=="health";g_free(name);
+        if(is_health){attach_health(c);return;}
         std::lock_guard lock(input_mutex);
         gchar *label = nullptr;
         g_object_get(c, "label", &label, nullptr);
@@ -226,7 +282,7 @@ class Peer : public std::enable_shared_from_this<Peer> {
         g_signal_connect_data(c, "on-message-string",
                               G_CALLBACK(+[](GstWebRTCDataChannel *, gchar *message, gpointer d) {
                                   if (auto p = get(d))
-                                      p->input(message);
+                                      p->input_channel_message(message);
                               }),
                               new Weak(shared_from_this()), destroy_weak, GConnectFlags(0));
         g_signal_connect_data(c, "on-close", G_CALLBACK(+[](GstWebRTCDataChannel *, gpointer d) {
@@ -277,11 +333,14 @@ class Peer : public std::enable_shared_from_this<Peer> {
             break;
         }
         bool live = active.load() && !failed.load();
-        return {{"generation", generation},
+        json result={{"generation", generation},
                 {"peerPresent", true},
                 {"peerActive", live},
                 {"rtcState", active.load() ? state : "closed"},
                 {"controlOpen", live && control_open.load() && !control_closed.load()}};
+        {std::lock_guard lock(health_mutex);result["health"]=health.snapshot(live && health_open &&
+            connection_state.load()==GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED);}
+        return result;
     }
     void build(const std::string &frame_socket, const std::string &stun, int udp_port, int bitrate,
                bool udp_only) {
@@ -493,7 +552,11 @@ class Peer : public std::enable_shared_from_this<Peer> {
                 gst_webrtc_data_channel_close(channel);
         }
         // Outside input lock: GStreamer can finish callbacks during state teardown.
+        GstWebRTCDataChannel *old_health=nullptr;
+        {std::lock_guard health_lock(health_mutex);old_health=health_channel;health_channel=nullptr;health_open=false;health.close();}
+        if(old_health)gst_webrtc_data_channel_close(old_health);
         stop_pipeline(pipeline);
+        if(old_health)g_object_unref(old_health);
         if (channel) {
             g_object_unref(channel);
             channel = nullptr;
@@ -509,6 +572,7 @@ class Service {
     std::mutex state_mutex, operation_mutex;
     Ipc ipc;
     traverse::ReadinessChallenge readiness;
+    std::unique_ptr<traverse::ReadinessMediaService> media;
     std::string token, origin, stun, web_root, base_path;
     int udp_port, bitrate;
     bool udp_only;
@@ -526,10 +590,15 @@ class Service {
 
   public:
     Service(std::string socket, std::string expected_origin, std::string server, std::string root,
-            int port, int rate, bool only_udp, json client_config, std::string path)
+            int port, int rate, bool only_udp, json client_config, std::string path,bool enable_media,std::string probe_broker)
         : ipc(std::move(socket)), origin(std::move(expected_origin)), stun(std::move(server)),
           web_root(std::move(root)), base_path(std::move(path)), udp_port(port), bitrate(rate),
-          udp_only(only_udp), ice_config(std::move(client_config)) {}
+          udp_only(only_udp), ice_config(std::move(client_config)) {
+        if(enable_media)media=std::make_unique<traverse::ReadinessMediaService>(
+            std::filesystem::canonical("/proc/self/exe").parent_path()/"traverse-readiness-media",
+            static_cast<unsigned short>(udp_port),std::move(probe_broker));
+    }
+    void stop_media(){if(media)media->stop();}
     void drop(const std::shared_ptr<Peer> &expected = nullptr) {
         std::shared_ptr<Peer> old;
         {
@@ -545,6 +614,7 @@ class Service {
         }
     }
     void owner_routes(httplib::Server &owner) {
+        if(media)media->owner_routes(owner);
         auto send=[](httplib::Response &response,json value,int status=200) {
             value.update({{"schemaVersion",1},{"pid",getpid()},
                 {"observedMonotonicMs",std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -648,6 +718,7 @@ class Service {
             return result;
         };
         auto route = [&](const std::string &suffix) { return literal(base_path + suffix); };
+        if(media)media->public_routes(server,route("api/readiness/media/"));
         server.set_pre_routing_handler([this](const httplib::Request &r, httplib::Response &s) {
             if (r.path.rfind(base_path + "api/", 0) == 0 && r.method == "POST" &&
                 r.get_header_value("Origin") != origin) {
@@ -717,6 +788,7 @@ class Service {
                 }
                 auto body = parse_body(r);
                 auto result = ipc.call("/pair", &body);
+                if(media)media->preempt();
                 {
                     std::lock_guard lock(state_mutex);
                     token = result.at("token").get<std::string>();
@@ -744,6 +816,7 @@ class Service {
                 json release = {{"type", "release"}};
                 ipc.call("/input", &release, lease);
                 drop();
+                if(media)media->preempt();
                 auto state = ipc.call("/state");
                 auto next = std::make_shared<Peer>(ipc, lease);
                 {
@@ -795,10 +868,12 @@ class Service {
             auto state = ipc.call("/state");
             if (!state.value("armed", false) || !state.value("paired", false)) {
                 drop();
+                if(media)media->owner_state(state.value("armed",false),state.value("paired",false));
                 std::lock_guard lock(state_mutex);
                 token.clear();
                 return;
             }
+            if(media)media->owner_state(true,true);
             std::shared_ptr<Peer> p;
             {
                 std::lock_guard lock(state_mutex);
@@ -815,6 +890,7 @@ class Service {
             }
         } catch (const std::exception &) {
             drop();
+            if(media)media->preempt();
             std::lock_guard lock(state_mutex);
             token.clear();
         }
@@ -888,7 +964,7 @@ int main(int argc, char **argv) {
                         std::stoi(args.get("--bitrate", "6000000")), args.has("--udp-only"),
                         client_ice_config(args.get("--ice-config"),
                                           args.get("--stun", "stun://stun.cloudflare.com:3478")),
-                        base_path);
+                        base_path,args.has("--media-readiness"),args.get("--media-probe-socket"));
         std::unique_ptr<httplib::Server> server;
         if (internal_http) {
             server = std::make_unique<httplib::Server>();
@@ -925,6 +1001,7 @@ int main(int argc, char **argv) {
             service.tick();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        service.stop_media();
         server->stop();
         listener.join();
         service.drop();

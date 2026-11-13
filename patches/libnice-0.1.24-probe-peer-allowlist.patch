@@ -1,0 +1,235 @@
+--- a/agent/agent-priv.h
++++ b/agent/agent-priv.h
+@@ -204,8 +204,13 @@
+   gboolean close_forced;              /* property: close-forced */
+   GTask* close_task;                  /* task associated with ongoing nice_agent_close_async() */
+   gboolean recv_tos;                  /* property: recv-tos */
++  /* Private probe role only. NULL preserves ordinary ICE behavior. */
++  gchar **probe_peer_allowlist;
++  GArray *probe_peer_addresses;
+   /* XXX: add pointer to internal data struct for ABI-safe extensions */
+ };
++
++gboolean agent_probe_peer_allowed (NiceAgent *agent, const NiceAddress *address);
+ 
+ gboolean
+ agent_find_component (
+--- a/agent/agent.c
++++ b/agent/agent.c
+@@ -132,6 +132,7 @@
+   PROP_CONSENT_FRESHNESS,
+   PROP_CLOSE_FORCED,
+   PROP_RECV_TOS,
++  PROP_PROBE_PEER_ALLOWLIST,
+ };
+ 
+ 
+@@ -370,6 +371,69 @@
+     *component = c;
+ 
+   return TRUE;
++}
++
++/* A private probe freezes numeric UDP peer tuples before creating streams.
++ * An explicitly empty list denies all peers. NULL means ordinary ICE. */
++gboolean
++agent_probe_peer_allowed (NiceAgent *agent, const NiceAddress *address)
++{
++  guint i;
++  if (agent->probe_peer_addresses == NULL)
++    return TRUE;
++  if (address == NULL)
++    return FALSE;
++  for (i = 0; i < agent->probe_peer_addresses->len; ++i) {
++    NiceAddress *allowed = &g_array_index (agent->probe_peer_addresses, NiceAddress, i);
++    if (nice_address_equal (allowed, address))
++      return TRUE;
++  }
++  return FALSE;
++}
++
++static void
++set_probe_peer_allowlist (NiceAgent *agent, gchar **values)
++{
++  GArray *addresses;
++  guint i;
++  if (values == NULL || agent->streams != NULL || agent->pruning_streams != NULL ||
++      agent->probe_peer_addresses != NULL) {
++    g_warning ("Probe peer allowlist must be set once before creating streams");
++    return;
++  }
++  addresses = g_array_new (FALSE, FALSE, sizeof (NiceAddress));
++  for (i = 0; values[i] != NULL; ++i) {
++    const gchar *separator = strrchr (values[i], '|');
++    const gchar *number;
++    gchar *host, *end;
++    guint64 port;
++    NiceAddress address;
++    if (separator == NULL || separator == values[i] || separator[1] == '\0')
++      goto invalid;
++    for (number = separator + 1; *number; ++number) {
++      if (*number < '0' || *number > '9')
++        goto invalid;
++    }
++    port = g_ascii_strtoull (separator + 1, &end, 10);
++    if (*end || port == 0 || port > 65535)
++      goto invalid;
++    host = g_strndup (values[i], separator - values[i]);
++    nice_address_init (&address);
++    if (!nice_address_set_from_string (&address, host)) {
++      g_free (host);
++      goto invalid;
++    }
++    g_free (host);
++    nice_address_set_port (&address, (guint) port);
++    g_array_append_val (addresses, address);
++  }
++  agent->probe_peer_addresses = addresses;
++  agent->probe_peer_allowlist = g_strdupv (values);
++  agent->use_ice_tcp = FALSE;
++  return;
++invalid:
++  g_array_unref (addresses);
++  g_warning ("Probe peer allowlist requires numeric address|UDP-port tuples");
+ }
+ 
+ static void
+@@ -987,6 +1051,11 @@
+         FALSE,
+         G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+ 
++  g_object_class_install_property (gobject_class, PROP_PROBE_PEER_ALLOWLIST,
++      g_param_spec_boxed ("probe-peer-allowlist", "Private probe UDP peer tuples",
++          "Immutable numeric address|UDP-port tuples; unset preserves ordinary ICE",
++          G_TYPE_STRV, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
++
+   /* install signals */
+ 
+   /**
+@@ -1577,6 +1646,10 @@
+       g_value_set_boolean (value, agent->close_forced);
+       break;
+ 
++    case PROP_PROBE_PEER_ALLOWLIST:
++      g_value_set_boxed (value, agent->probe_peer_allowlist);
++      break;
++
+     case PROP_RECV_TOS:
+       g_value_set_boolean (value, agent->recv_tos);
+       break;
+@@ -1781,6 +1854,10 @@
+       break;
+ 
+     case PROP_ICE_TCP:
++      if (agent->probe_peer_addresses != NULL && g_value_get_boolean (value)) {
++        g_warning ("Private probe peer policy only permits UDP ICE");
++        break;
++      }
+       if ((agent->compatibility == NICE_COMPATIBILITY_RFC5245 ||
+               agent->compatibility == NICE_COMPATIBILITY_OC2007 ||
+               agent->compatibility == NICE_COMPATIBILITY_OC2007R2) &&
+@@ -1823,6 +1900,10 @@
+ 
+     case PROP_CLOSE_FORCED:
+       agent->close_forced = g_value_get_boolean (value);
++      break;
++
++    case PROP_PROBE_PEER_ALLOWLIST:
++      set_probe_peer_allowlist (agent, g_value_get_boxed (value));
+       break;
+ 
+     case PROP_RECV_TOS:
+@@ -4250,6 +4331,9 @@
+   NiceCandidateImpl *c;
+   CandidateCheckPair *pair;
+ 
++  if (!agent_probe_peer_allowed (agent, addr) ||
++      (agent->probe_peer_addresses != NULL && transport != NICE_CANDIDATE_TRANSPORT_UDP))
++    return FALSE;
+   if (type == NICE_CANDIDATE_TYPE_PEER_REFLEXIVE)
+     return FALSE;
+   if (transport == NICE_CANDIDATE_TRANSPORT_UDP &&
+@@ -6259,6 +6343,9 @@
+   g_free (agent->software_attribute);
+   agent->software_attribute = NULL;
+ 
++  g_clear_pointer (&agent->probe_peer_allowlist, g_strfreev);
++  g_clear_pointer (&agent->probe_peer_addresses, g_array_unref);
++
+   if (agent->main_context != NULL)
+     g_main_context_unref (agent->main_context);
+   agent->main_context = NULL;
+@@ -6991,6 +7078,11 @@
+   g_return_val_if_fail (candidate != NULL, FALSE);
+ 
+   agent_lock (agent);
++
++  if (!agent_probe_peer_allowed (agent, &candidate->addr) ||
++      (agent->probe_peer_addresses != NULL &&
++       candidate->transport != NICE_CANDIDATE_TRANSPORT_UDP))
++    goto done;
+ 
+   /* step: check if the component exists*/
+   if (!agent_find_component (agent, stream_id, component_id, &stream, &component)) {
+--- a/agent/conncheck.c
++++ b/agent/conncheck.c
+@@ -2840,6 +2840,11 @@
+  */
+ int conn_check_send (NiceAgent *agent, CandidateCheckPair *pair)
+ {
++  if (!agent_probe_peer_allowed (agent, &pair->remote->addr) ||
++      (agent->probe_peer_addresses != NULL &&
++       pair->remote->transport != NICE_CANDIDATE_TRANSPORT_UDP))
++    return -1;
++
+ 
+   /* note: following information is supplied:
+    *  - username (for USERNAME attribute)
+@@ -4554,7 +4559,15 @@
+   NiceCandidate *remote_candidate2 = NULL;
+   NiceCandidate *local_candidate = NULL;
+   gboolean discovery_msg = FALSE;
++  gboolean probe_discovery_reply = FALSE;
+   IncomingCheck *pending_check = NULL;
++
++  /* Requests/indications from an ungranted tuple get no response, including
++   * authenticated peer-reflexive discovery and unauthenticated error replies.
++   * Response classes can still complete the configured STUN/TURN transactions. */
++  if (!agent_probe_peer_allowed (agent, from) &&
++      (len < 2 || (((guint8 *) buf)[0] & 1) == 0))
++    return TRUE;
+ 
+   nice_address_copy_to_sockaddr (from, &sockaddr.addr);
+ 
+@@ -4586,6 +4599,10 @@
+         if (valid == STUN_VALIDATION_UNMATCHED_RESPONSE)
+           continue;
+ 
++        if (valid == STUN_VALIDATION_SUCCESS &&
++            stun_message_get_class (&req) >= STUN_RESPONSE &&
++            nice_address_equal (from, &d->server))
++          probe_discovery_reply = TRUE;
+         discovery_msg = TRUE;
+         break;
+       }
+@@ -4608,6 +4625,10 @@
+         nice_debug ("Validating gave %d", valid);
+         if (valid == STUN_VALIDATION_UNMATCHED_RESPONSE)
+           continue;
++        if (valid == STUN_VALIDATION_SUCCESS &&
++            stun_message_get_class (&req) >= STUN_RESPONSE &&
++            nice_address_equal (from, &r->server))
++          probe_discovery_reply = TRUE;
+         discovery_msg = TRUE;
+         break;
+       }
+@@ -4615,6 +4636,9 @@
+   }
+ 
+   g_free (validater_data.password);
++
++  if (!agent_probe_peer_allowed (agent, from) && !probe_discovery_reply)
++    return TRUE;
+ 
+   if (valid == STUN_VALIDATION_NOT_STUN ||
+       valid == STUN_VALIDATION_INCOMPLETE_STUN ||

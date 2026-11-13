@@ -45,6 +45,19 @@ class SourceDownloadTests(unittest.TestCase):
             fetch.main()
         return root/'sources'
 
+    def test_local_patch_digest_checked_before_network_or_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'packaging').mkdir();(root/'patches').mkdir()
+            source=root/'patches/probe.patch';source.write_bytes(b'exact patch')
+            manifest={'sources':[{'name':'fixture','url':'https://unused.invalid/source.tar',
+                'sha256':'0'*64,'localPatches':[{'file':'patches/probe.patch',
+                'sha256':hashlib.sha256(source.read_bytes()).hexdigest()}]}]}
+            (root/'packaging/runtime-manifest.json').write_text(json.dumps(manifest))
+            source.write_bytes(b'changed patch')
+            with patch.object(fetch,'ROOT',root),patch.object(fetch.sys,'argv',['fetch-sources.py',str(root/'sources')]),patch.object(fetch.subprocess,'run') as network:
+                with self.assertRaisesRegex(ValueError,'Local patch digest mismatch'):fetch.main()
+                network.assert_not_called()
+
     def test_real_curl_recovers_a_truncated_download(self):
         with tempfile.TemporaryDirectory() as root,self.source_server(True) as (url,body,requests):
             output=self.run_fetch(root,url,hashlib.sha256(body).hexdigest())

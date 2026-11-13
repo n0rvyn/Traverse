@@ -1,6 +1,8 @@
 #include "readiness_manager.hpp"
 #include "common.hpp"
 #include <charconv>
+#include <csignal>
+namespace {volatile std::sig_atomic_t priority_requested=0;void request_priority(int){priority_requested=1;}}
 
 int main(int argc,char **argv) {
     try {
@@ -9,19 +11,22 @@ int main(int argc,char **argv) {
         auto parsed=std::from_chars(argv[2],end,parent);
         if(parsed.ec!=std::errc{} || parsed.ptr!=end || parent<=1 || prctl(PR_SET_PDEATHSIG,SIGTERM) || getppid()!=parent)return 1;
         std::string bytes(std::istreambuf_iterator<char>(std::cin),{});auto input=json::parse(bytes);
+        if(input.value("priorityFromSignal",false))std::signal(SIGUSR1,request_priority);
         auto settings=traverse::ObserverSettings::parse(input.at("observer"),"");
         traverse::ReadinessManager manager(settings,input.at("agent").get<std::string>(),
-            input.at("owner").at("socket").get<std::string>(),input.at("owner").at("pid").get<pid_t>());
+            input.at("owner").at("socket").get<std::string>(),input.at("owner").at("pid").get<pid_t>(),
+            input.value("mediaPort",static_cast<unsigned short>(0)));
         if(!manager.start() || manager.start())throw std::runtime_error("Overlapping start accepted");
         auto watchdog=Clock::now()+std::chrono::seconds(30);bool invalidated=false,retried=false;std::int64_t maximum=0;
         while(Clock::now()<watchdog) {
+            if(priority_requested)manager.controller_priority(true);
             auto start=Clock::now();manager.tick();
             maximum=std::max<std::int64_t>(maximum,std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count());
             auto snapshot=manager.snapshot();auto status=snapshot.at("status").get<std::string>();
             if(input.value("invalidate",false) && !invalidated && !snapshot.at("addresses").empty()) {
                 manager.invalidate();invalidated=true;continue;
             }
-            if(status=="verified" || status=="partial" || status=="failed" || status=="unavailable" || status=="cleanupPending") {
+            if(status=="verified" || status=="partial" || status=="failed" || status=="unavailable" || status=="cleanupPending" || status=="controllerPriority") {
                 if(status=="cleanupPending" && input.value("retryCleanup",false) && !retried) {
                     if(!manager.start())throw std::runtime_error("Explicit cleanup retry rejected");
                     retried=true;continue;

@@ -20,7 +20,7 @@ from owner_authority_test import UnixHTTP
 
 DOMAIN='readiness.example.test'
 
-class ReadinessServiceTests(unittest.TestCase):
+class ReadinessServiceFixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.clean_env=dict(os.environ)
@@ -81,10 +81,13 @@ class ReadinessServiceTests(unittest.TestCase):
         p=subprocess.Popen(arguments,env=self.native_env,stdout=subprocess.DEVNULL,stderr=log,**self.identity)
         self.processes.append(p);return p
     def start_service(self):
-        self.service=self.spawn([SERVICE,'--host','127.0.0.1','--port',str(self.port),
+        arguments=[SERVICE,'--host','127.0.0.1','--port',str(self.port),
             '--origin',self.origin,'--base-path',self.base,'--cert',str(self.certificate),'--key',str(self.key),
             '--web',WEB,'--socket',str(self.adapter_socket),'--owner-socket',str(self.owner_socket),
-            '--stun','','--supervisor-pid',str(os.getpid())])
+            '--stun','','--supervisor-pid',str(os.getpid())]
+        if getattr(self,'media_enabled',False):arguments+=['--media-readiness']
+        if hasattr(self,'media_port'):arguments+=['--udp-port',str(self.media_port),'--udp-only']
+        self.service=self.spawn(arguments)
         def ready():
             if self.service.poll() is not None:raise AssertionError('Actual TLS service exited during startup')
             if not self.owner_socket.exists():return False
@@ -174,6 +177,15 @@ class ReadinessServiceTests(unittest.TestCase):
     def query(self):
         env=dict(self.clean_env,DISPLAY=self.display);env.pop('XAUTHORITY',None)
         return json.loads(subprocess.check_output([X11_PROBE,'query'],env=env,text=True))
+    def close(self):
+        for p in reversed(self.processes):
+            if p.poll() is None:p.terminate()
+            try:p.wait(timeout=10)
+            except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5);raise
+        for log in self.logs:log.close()
+        self.temp.cleanup()
+
+class ReadinessServiceTests(ReadinessServiceFixture):
     def test_real_tls_scope_replay_and_live_controller_isolation(self):
         before=self.adapter_state();authority=self.authority();lease=self.begin()
         self.assertFalse(before['capturing']);self.assertFalse(before['paired'])
@@ -528,13 +540,6 @@ sys.exit(7 if FAULT=='exit-failure' and request['operation']=='check' else resul
         self.assertNotEqual(fresh['instance'],old['instance']);self.assertEqual(self.challenge(old)[0],403)
         self.assertEqual(self.inspect(old)[0],404);self.assertEqual(self.challenge(fresh)[0],200)
         self.assertEqual(self.end(fresh)[0],200);self.assertFalse(self.adapter_state()['capturing'])
-    def close(self):
-        for p in reversed(self.processes):
-            if p.poll() is None:p.terminate()
-            try:p.wait(timeout=10)
-            except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5);raise
-        for log in self.logs:log.close()
-        self.temp.cleanup()
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
