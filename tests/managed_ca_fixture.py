@@ -19,6 +19,7 @@ class PrivateCA:
     def __init__(self, root, pebble, target, slow=False):
         self.root = Path(root)
         self.process = None
+        self.startup_log = None
         self.servers = []
         self.api_certificate, self.api_key = self.root/'api.pem', self.root/'api.key'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes',
@@ -34,6 +35,8 @@ class PrivateCA:
             self.bridge.forward_gate.clear()
         self.created = [self.dns, self.bridge]
         api_port, management_port = free_port(), free_port()
+        while management_port == api_port:
+            management_port = free_port()
         configuration = self.root/'pebble.json'
         configuration.write_text(json.dumps({'pebble': {
             'listenAddress': '127.0.0.1:'+str(api_port), 'managementListenAddress': '127.0.0.1:'+str(management_port),
@@ -50,9 +53,13 @@ class PrivateCA:
             if libc.prctl(1, signal.SIGTERM, 0, 0, 0) or os.getppid() != parent:
                 os._exit(125)
         try:
+            # This is the synthetic CA's own output, never an app owner log.
+            # Keep it private and read it only if CA initialization fails.
+            log_path = self.root/'pebble-startup.log'
+            self.startup_log = os.fdopen(os.open(log_path, os.O_RDWR|os.O_CREAT|os.O_EXCL, 0o600), 'w+b')
             self.process = subprocess.Popen([str(pebble), '-config', str(configuration), '-dnsserver',
                 '127.0.0.1:'+str(self.dns.server_address[1]), '-strict=false'], env=environment,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=guard, start_new_session=True)
+                stdout=self.startup_log, stderr=subprocess.STDOUT, preexec_fn=guard, start_new_session=True)
             for server in self.created:
                 server.start();self.servers.append(server)
             context = ssl.create_default_context(cafile=str(self.api_certificate))
@@ -63,6 +70,15 @@ class PrivateCA:
             self.issuing_root.write_bytes(self.get('https://127.0.0.1:'+str(management_port)+'/roots/0'))
             self.api_certificate.chmod(0o644);self.issuing_root.chmod(0o644)
         except BaseException:
+            diagnostic = {'privateCaStartupFailure': True,
+                          'exitBeforeCleanup': self.process.poll() if self.process else None,
+                          'apiPort': api_port, 'managementPort': management_port,
+                          'dnsPort': self.dns.server_address[1],
+                          'validationPort': self.bridge.server_address[1]}
+            if self.startup_log is not None:
+                self.startup_log.flush();self.startup_log.seek(0)
+                diagnostic['fixtureOutput'] = self.startup_log.read().decode(errors='replace')
+            print(json.dumps(diagnostic), flush=True)
             self.close();raise
 
     def get(self, uri):
@@ -83,3 +99,5 @@ class PrivateCA:
             else:
                 server.server_close()
         self.servers.clear()
+        if self.startup_log is not None:
+            self.startup_log.close();self.startup_log = None
