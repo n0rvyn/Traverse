@@ -16,10 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-            image: fedora:44
-            suite: setup
           - runner: ubuntu-24.04-arm
             arch: aarch64
             image: almalinux@sha256:5a4b41a427c9717be8f4ac2a32aa22efbae5f9124fbcb79a6765394f312acfe8
