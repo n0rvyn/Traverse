@@ -81,10 +81,14 @@ def main():
                 baseline=prefix_processes();owner=OwnerFixture(desktop)
                 def verified():
                     row=owner.call('status');assert row.get('phase')!='failed',row
-                    return row if (row.get('urlCheck') or {}).get('status')=='verified' else None
+                    check=row.get('urlCheck') or {}
+                    return row if check.get('status')=='verified' and check.get('media')=='verified' else None
                 wait(verified,'Automatic configured-launch URL verification',timeout=30)
                 first=owner.call('status');assert first['urlCheck']['externalReachability']=='unknown'
-                assert first['urlCheck']['media']=='unknown' and first['urlCheck']['networkObservation']=='active'
+                assert first['urlCheck']['mediaChecks']['addresses']==[
+                    dict(address='127.0.0.1',mode='relay',status='verified'),
+                    dict(address='127.0.0.1',mode='direct',status='verified')],first['urlCheck']
+                assert first['urlCheck']['networkObservation']=='active'
                 adapter=runtime/'traverse/adapter.sock'
                 def authority_state():
                     value=ipc(adapter,'/owner/authority');value.pop('observedMonotonicMs');return value
@@ -130,7 +134,23 @@ def main():
                     'Certificate reload not reported',timeout=10)
                 wait(lambda:(owner.call('status').get('urlCheck') or {}).get('startedMonotonicMs',0)>start,'Certificate change failed to invalidate URL check')
                 wait(verified,'Renewed certificate URL verification')
+                # A real controller cancels a pending idle resolver before it
+                # takes over. No background check runs alongside that session.
+                dns.set(DOMAIN,'drop','drop');assert owner.call('check-connection')['ok']
+                wait(lambda:children(observer.pid),'Pending actual observer resolver worker')
+                launcher=owner.ready['launcherPid']
+                def readiness_agents():
+                    result=[]
+                    for pid in children(launcher):
+                        try:
+                            if Path(f'/proc/{pid}/exe').resolve().name=='traverse-readiness-agent':result.append(pid)
+                        except (FileNotFoundError,ProcessLookupError):pass
+                    return result
+                wait(lambda:len(readiness_agents())==1,'Pending native agent before pairing')
                 assert owner.call('pair')['paired'];paired=authority_state()
+                wait(lambda:owner.call('status')['urlCheck']['media']=='activeSession',
+                    'Real controller did not take priority over background checks')
+                wait(lambda:not children(observer.pid),'Pairing left an observer resolver running')
                 assert owner.call('hold-shift')['accepted']
                 def query():
                     probe=os.environ.get('TRAVERSE_TEST_X11_PROBE','/tmp/x11-probe')
@@ -138,26 +158,24 @@ def main():
                         text=True,capture_output=True,check=True)
                     return json.loads(result.stdout)
                 assert query()['shift']==1
-                dns.set(DOMAIN,'drop','drop');assert owner.call('check-connection')['ok']
-                wait(lambda:children(observer.pid),'Pending actual observer resolver worker')
+                rejected=owner.call('check-connection');assert not rejected['ok'],rejected
                 assert authority_state()==paired
+                wait(lambda:not readiness_agents(),'Background agent survived real controller priority')
                 owned=descendants(owner.process.pid)
                 stopped_at=time.monotonic()
                 if ending=='launcher-death':
-                    launcher=owner.ready['launcherPid']
-                    helpers=[pid for pid in children(launcher) if Path(f'/proc/{pid}/exe').resolve().name=='traverse-readiness-agent']
-                    assert len(helpers)==1,'Pending native agent missing before parent SIGKILL'
                     os.kill(launcher,signal.SIGKILL)
                 elif ending=='death':owner.process.kill();owner.process.wait(timeout=5)
                 else:assert owner.call('request-'+ending)==dict(stopRequested=True)
-                wait(lambda:query()['shift']==0,'Pending check delayed input release',timeout=3)
+                wait(lambda:query()['shift']==0,'Active-session Stop left held input',timeout=3)
                 release_ms=(time.monotonic()-stopped_at)*1000
                 if ending not in ('death','launcher-death'):assert owner.call('wait-stopped')==dict(stopped=True,exit=0)
                 wait(lambda:not any(alive(pid) for pid in owned),'Native child survived host loss',timeout=12)
                 wait(lambda:prefix_processes()==baseline,'URL agent/worker survived host loss',timeout=5)
                 print(json.dumps(dict(ending=ending,automaticStart=True,realHttpsReceipt=True,retry=True,
                     offlineHostsVerifiedWithoutDNS=True,hostsChangeAndRemovalInvalidated=True,
-                    resolverInvalidation=True,interfaceInvalidation=interface_events,certificateInvalidation=True,pendingDnsInputRelease=True,
+                    resolverInvalidation=True,interfaceInvalidation=interface_events,certificateInvalidation=True,
+                    idleDirectAndRelayVerified=True,pairCancelledPendingDns=True,activeSessionSuppressesProbes=True,
                     localInputReleaseObservedMs=round(release_ms,3),allOwnedReaped=True)),flush=True)
             except BaseException:
                 diagnostic=home/'broker-fixture-stderr.txt'
