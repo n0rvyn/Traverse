@@ -340,6 +340,7 @@ class ReadinessServiceTests(ReadinessServiceFixture):
                         self.assertEqual(managed['snapshot']['status'],'verified')
                         self.assertEqual(managed['invalidated'],invalidate)
                         self.assertEqual(managed['snapshot']['externalReachability'],'unknown')
+                        self.assertEqual(managed['snapshot']['observer'],dict(host=DOMAIN,port=observer_port))
                         self.assertEqual(managed['snapshot']['media'],'unknown')
                         self.assertNotIn(str(token_file),json.dumps(managed))
                         self.assertNotIn('receipt',json.dumps(managed))

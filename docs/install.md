@@ -2,7 +2,7 @@
 
 Development builds are available from the successful [CI runs](https://github.com/n0rvyn/Traverse/actions/workflows/ci.yml). Choose the artifact for `x86_64` or `aarch64`; check `SHA256SUMS` before installation. No stable release has been published.
 
-The [verified development build](https://github.com/n0rvyn/Traverse/actions/runs/43306397479) includes the native `traverse-host` entry on x86_64 and arm64. It uses system Qt6.2.4+ and OpenSSL3; no Python, compiler or Go installation is needed to run it. Installed DEB/RPM and portable lifecycle checks passed on both architectures. The complete ordinary Chrome journey passed on isolated x86_64 X11 displays in Ubuntu and Gentoo userlands, including Gentoo system Qt6.11.3 and Chrome157. Normal GNOME/KDE Wayland integration and physical-hardware latency remain open.
+The [verified development build](https://github.com/n0rvyn/Traverse/actions/runs/43482685974) includes the native `traverse-host` entry on x86_64 and arm64. It uses system Qt6.2.4+ and OpenSSL3; no Python, compiler or Go installation is needed to run it. Installed DEB/RPM and portable lifecycle checks passed on both architectures. The complete ordinary Chrome journey passed on isolated x86_64 X11 displays in Ubuntu and Gentoo userlands, including Gentoo system Qt6.11.3 and Chrome157. Normal GNOME/KDE Wayland integration and physical-hardware latency remain open.
 
 ## Install and start sharing
 
@@ -28,6 +28,8 @@ Run `traverse-host` as the owner of the existing X11 desktop. On first launch:
 4. Open the displayed Remote URL in Chrome and enter the pairing code shown on Linux. Stop sharing, or closing the host window, ends sharing.
 
 Settings saves domain, port and certificate changes for the next launch. It shows “Saved. Changes take effect the next time you launch Traverse.” Sharing continues on the active settings until stopped.
+
+Connection checks distinguish local HTTPS readiness from results seen by the configured checking machine. The Media row shows direct/relay check results while idle and the age of the last Chrome-verified video during control. A failed check also sends one native desktop notification when the desktop notification service is available. Missing or cancelled checks remain unavailable or cancelled; they do not mean the host is unreachable.
 
 Local certificate generation works without Internet access. The hostname still needs to resolve to the host from the client, and the selected TCP/UDP port needs a working network route. Local HTTPS readiness does not prove public reachability.
 

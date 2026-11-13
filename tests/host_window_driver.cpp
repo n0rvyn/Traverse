@@ -118,7 +118,8 @@ int main(int argc,char **argv) {
                     {"urlCopyAvailable",remote->isEnabled()},{"newCodeAvailable",fresh->isEnabled()},
                     {"stopInsideWindow",window.rect().contains(QRect(stop->mapTo(&window,QPoint(0,0)),stop->size()))},
                     {"stopOnScreen",window.screen()->availableGeometry().contains(QRect(stop->mapToGlobal(QPoint(0,0)),stop->size()))},
-                    {"urlCheck",window.findChild<QLabel*>("urlCheck")->text()}});
+                    {"urlCheck",window.findChild<QLabel*>("urlCheck")->text()},
+                    {"mediaCheck",window.findChild<QLabel*>("mediaCheck")->text()}});
             } else if(action=="focus") {
                 report(focus_report());
             } else if(action=="click") {

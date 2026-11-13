@@ -1,6 +1,11 @@
 #include "sharing_window.hpp"
 #include "settings_dialog.hpp"
 #include "window_geometry.hpp"
+#include "connection_feedback.hpp"
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QVariantMap>
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -78,6 +83,7 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
     url_check = new QLabel("URL: Checking…", this); url_check->setObjectName("urlCheck");
     media_check = new QLabel("Media: Waiting for Chrome", this); media_check->setObjectName("mediaCheck");
     url_check->setWordWrap(true); media_check->setWordWrap(true);
+    url_check->setTextFormat(Qt::PlainText);media_check->setTextFormat(Qt::PlainText);
     details->addWidget(url_check); details->addWidget(media_check); details->addStretch();
     auto footer = new QHBoxLayout; footer->addStretch();
     stop_button = new QPushButton("Stop sharing", this); stop_button->setObjectName("stopSharing");
@@ -107,6 +113,7 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
         if(export_cancelled)export_cancelled->store(true);
         export_available=false;export_ca->setEnabled(false);
         if (!closing) { status->setText("Sharing failed"); url_check->setText(message); }
+        if(!closing)notifyFailure(message,{},true);
     };
     client.stopped = [this](int result) {
         if(export_cancelled)export_cancelled->store(true);
@@ -114,6 +121,7 @@ SharingWindow::SharingWindow(const QString &prefix, const QString &configuration
         sharing_ended=true;
         if (closing) { close(); QApplication::quit(); }
         else { status->setText(result == 0 ? "Sharing stopped" : "Sharing failed"); }
+        if(!closing && result!=0)notifyFailure("Sharing stopped unexpectedly.",{},true);
     };
     fitDesktopWindow(*this,QSize(520,440));
 }
@@ -194,10 +202,25 @@ void SharingWindow::updateState(const QJsonObject &state) {
     status->setText(phase == "failed" ? "Sharing failed" : phase != "ready" ? "Starting sharing" :
                     connected ? "Connected" : authority.value("paired").toBool() ?
                     "Waiting for Chrome to reconnect" : "Waiting for Chrome");
-    auto local = state.value("localHttps").toObject().value("status").toString();
-    url_check->setText(local == "passed" ? "URL: Local HTTPS verified. External check unavailable" :
-                       local == "pending" ? "URL: Checking…" : "URL: Status unavailable");
-    media_check->setText(connected ? "Media: Connected" : "Media: Waiting for Chrome");
+    auto now=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto feedback=connection_feedback(state,now);
+    url_check->setText(feedback.url);media_check->setText(feedback.media);
+    if(!feedback.notification_body.isEmpty())
+        notifyFailure(feedback.notification_body,feedback.notification_key,feedback.startup_failure);
+}
+void SharingWindow::notifyFailure(const QString &body,const QString &identity,bool startup) {
+    if(closing || body.isEmpty())return;
+    if(startup) {if(startup_notified)return;startup_notified=true;}
+    else {if(identity.isEmpty() || identity==notified_check)return;notified_check=identity;}
+    auto bus=QDBusConnection::sessionBus();if(!bus.isConnected())return;
+    auto message=QDBusMessage::createMethodCall("org.freedesktop.Notifications","/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications","Notify");
+    message.setArguments({QString("Traverse"),uint(0),QString(),
+        startup?QString("Traverse sharing failed"):QString("Traverse connection check failed"),body.toHtmlEscaped(),
+        QStringList{},QVariantMap{},-1});
+    auto pending=new QDBusPendingCallWatcher(bus.asyncCall(message),this);
+    connect(pending,&QDBusPendingCallWatcher::finished,pending,&QObject::deleteLater);
 }
 void SharingWindow::stopSharing() {
     if (closing) return;

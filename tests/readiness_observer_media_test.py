@@ -95,6 +95,7 @@ class ObserverMediaTests(media.MediaServiceTests):
         snapshot=self.manager_result(self.start_manager())
         self.assertEqual(snapshot['status'],'verified',snapshot);self.assertEqual(snapshot['media'],'verified',snapshot)
         self.assertEqual(snapshot['externalReachability'],'unknown')
+        self.assertEqual(snapshot['observer'],dict(host=media.fixture.DOMAIN,port=self.observer_port))
         self.assertEqual(snapshot['mediaChecks']['addresses'],[
             dict(address='127.0.0.1',mode='relay',status='verified'),dict(address='127.0.0.1',mode='direct',status='verified')])
         self.assertEqual(children(self.service.pid),[]);self.assertEqual(children(self.observer.pid),[])

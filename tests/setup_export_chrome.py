@@ -183,6 +183,22 @@ def main():
                     observation['decodedFrames']>previous['decodedFrames'] and observation['presentedFrames']>previous['presentedFrames'])
             wait(native_video_observed,'Packaged Chrome video health receipt did not reach the native service')
             first_health=native_peer['health']['lastObservation'];peer_generation=native_peer['generation']
+            browser.evaluate("document.getElementById('desktop').pause()")
+            paused_observation=first_health;unchanged_since=time.monotonic()
+            def paused_receipt():
+                nonlocal paused_observation,unchanged_since
+                if not native_video_observed():return False
+                observation=native_peer['health']['lastObservation']
+                if observation['observedMonotonicMs']!=paused_observation['observedMonotonicMs']:
+                    paused_observation=observation;unchanged_since=time.monotonic()
+                assert native_peer['generation']==peer_generation,'Pausing presentation replaced the controller'
+                return time.monotonic()-unchanged_since>=2
+            wait(paused_receipt,'Paused Chrome presentation continued producing video receipts')
+            assert browser.evaluate("document.getElementById('desktop').paused")
+            x11('capture',str(evidence/'paused-video-native.ppm'))
+            browser.evaluate("document.getElementById('desktop').play();true")
+            wait(lambda:native_video_observed(paused_observation),'Resumed presentation did not advance video verification')
+            assert native_peer['generation']==peer_generation,'Resuming presentation replaced the controller'
             browser.evaluate("document.getElementById('desktop').focus()");browser.key('keyDown','Shift','ShiftLeft',16)
             wait(lambda:x11('query')['shift']==1,'Fresh exported-CA Chrome input missing');browser.key('keyUp','Shift','ShiftLeft',16);wait(lambda:x11('query')['shift']==0,'Initial Chrome input release missing')
             frames=browser.evaluate("document.getElementById('desktop').getVideoPlaybackQuality().totalVideoFrames")
@@ -221,6 +237,8 @@ def main():
             queries=[kind for name,kind in dns.queries if name==DOMAIN]
             report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','hostsFileResolution':True,'testDomainDnsQueries':len(queries),'testDomainDnsQueryTypes':sorted(set(queries)),'testDomainDnsAddressAnswers':0,'withoutInternetRoute':True,'sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
             report['nativeVideoHealthBeforeSettings']=first_health
+            report['pausedPresentationStoppedReceiptsWithoutDisconnect']=True
+            report['resumedPresentationAdvancedSameGeneration']=True
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)
         except BaseException:
             diagnostic('failure-before-cleanup')

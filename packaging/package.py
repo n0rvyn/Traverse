@@ -147,7 +147,7 @@ def system_ui_dependencies(ui, architecture, maximum, runtime, prefix):
     if '(RPATH)' in dynamic or '(RUNPATH)' in dynamic:
         raise ValueError('Native host must not contain a private library RPATH')
     needed=sorted(re.findall(r'Shared library: \[([^\]]+)\]',dynamic))
-    required={'libQt6Core.so.6','libQt6Gui.so.6','libQt6Widgets.so.6','libssl.so.3','libcrypto.so.3'}
+    required={'libQt6Core.so.6','libQt6Gui.so.6','libQt6Widgets.so.6','libQt6DBus.so.6','libssl.so.3','libcrypto.so.3'}
     if not required.issubset(needed) or any(re.match(r'lib(?:gst|nice|ei\.|pipewire)',name) for name in needed):
         raise ValueError('Native host has an unexpected system/media dependency boundary')
     clean=dict(os.environ)

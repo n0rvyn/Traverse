@@ -37,9 +37,9 @@ set -euo pipefail
 mkdir -p /etc/portage/package.use /etc/portage/package.license
 # Package policy applies only to this disposable Chrome test installation.
 printf 'www-client/google-chrome google-chrome\n' > /etc/portage/package.license/traverse-test
-printf 'dev-qt/qtbase X gui widgets\nx11-base/xorg-server xvfb\ndev-libs/nss utils\n' > /etc/portage/package.use/traverse-test
+printf 'dev-qt/qtbase X gui widgets dbus\nx11-base/xorg-server xvfb\ndev-libs/nss utils\n' > /etc/portage/package.use/traverse-test
 # Runtime Qt must come from the signed binhost, never an unnoticed local build.
-emerge --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets]'
+emerge --nospinner --getbinpkg --usepkgonly --binpkg-respect-use=y 'dev-qt/qtbase:6[X,gui,widgets,dbus]'
 # Xvfb and browser observers are test prerequisites. Portage can build these
 # when a matching binary is absent; package logs and installed USE are retained.
 emerge --nospinner --getbinpkg --jobs=2 --load-average=2 \
@@ -163,7 +163,7 @@ for atom in ('dev-qt/qtbase', 'www-client/google-chrome', 'x11-base/xorg-server'
     matches=list(Path('/var/db/pkg').glob(atom+'-*'))
     assert matches, atom
     for path in matches: packages[str(path.relative_to('/var/db/pkg'))]=(path/'USE').read_text().split()
-assert any('gui' in use and 'widgets' in use for key,use in packages.items() if key.startswith('dev-qt/qtbase-'))
+assert any('gui' in use and 'widgets' in use and 'dbus' in use for key,use in packages.items() if key.startswith('dev-qt/qtbase-'))
 Path('/run/evidence/gentoo-install-summary.json').write_text(json.dumps({
     'sourceCommit':manifest['sourceCommit'], 'payloadHashesChecked':True,
     'userland':Path('/etc/gentoo-release').read_text().strip(), 'kernel':os.uname().release,

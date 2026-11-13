@@ -1,15 +1,19 @@
 # Native host window
 
-This is the native host target for the approved setup, sharing, Settings and public CA export windows. [CI run 43248280700](https://github.com/n0rvyn/Traverse/actions/runs/43248280700) includes `traverse-host` in x86_64 and arm64 development packages. Actual installed DEB/RPM and relocated portable setup, native input cleanup, Stop/relaunch and owner-data preservation checks passed in isolated X11 tests. The x86_64 installed-package ordinary Chrome journey also passed native setup/export, client trust, video/key control, Settings continuity and relaunch. Full GNOME/KDE, Gentoo system-Qt host-window and physical-hardware acceptance remain open.
+This is the native host target for the approved setup, sharing, Settings and public CA export windows. [CI run 43482685974](https://github.com/n0rvyn/Traverse/actions/runs/43482685974) includes `traverse-host` in x86_64 and arm64 development packages. Actual installed DEB/RPM and relocated portable setup, native input cleanup, Stop/relaunch and owner-data preservation checks passed in isolated X11 tests. The x86_64 installed-package ordinary Chrome journey also passed native setup/export, client trust, video/key control, Settings continuity and relaunch. Normal GNOME/KDE Wayland control and physical-hardware acceptance remain open.
+
+The existing URL and Media rows name the configured checking endpoint. URL verification and direct/relay video results stay separate; cancelled checks and missing evidence do not report an unreachable host. During control, Media shows the age of the last video frame verified from Chrome. That age keeps increasing when presentation stops; a historical receipt does not guarantee current video.
+
+A definitive failed URL/video check sends one native desktop notification per check. Startup failures notify once per window. Active control takes priority over background checks. Notification delivery uses the session bus asynchronously; an absent or slow desktop notification service leaves inline feedback and Stop sharing usable. QtDBus stays in the system UI process, outside the private media runtime.
 
 The UI links system Qt6 and runs separately from the private media runtime. It
 obtains the native runtime environment before creating its private owner socket,
 then directly starts the owned supervisor. It does not parse owner logs.
 
 Build on Linux with Qt6.2 or newer development libraries (including the OpenGL
-headers required by QtGui), CMake, a C++17 compiler, OpenSSL development libraries
+headers required by QtGui, and QtDBus), CMake, a C++17 compiler, OpenSSL development libraries
 and nlohmann-json headers. Tests also use Python3
-and the OpenSSL executable:
+the OpenSSL executable and `dbus-run-session`:
 
 ```sh
 cmake -S host -B .work/build-host

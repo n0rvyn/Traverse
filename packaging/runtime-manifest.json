@@ -215,7 +215,7 @@
       ]
     },
     "gentooRuntimeAtoms": [
-      ">=dev-qt/qtbase-6.2.4:6[gui,widgets,X]",
+      ">=dev-qt/qtbase-6.2.4:6[gui,widgets,X,dbus]",
       ">=dev-qt/qtwayland-6.2.4:6"
     ]
   }

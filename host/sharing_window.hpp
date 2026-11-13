@@ -10,10 +10,13 @@ class QFileDialog;
 namespace traverse {
 class SettingsDialog;
 class SharingWindow : public QWidget {
+    friend class SharingFeedbackTests;
     OwnerClient client;
     QLabel *status, *url, *code, *url_check, *media_check;
     QPushButton *copy_url, *copy_code, *new_code, *stop_button;
     QString running_url, available_code;
+    QString notified_check;
+    bool startup_notified=false;
     bool closing = false;
     bool sharing_ended = false;
     bool refreshing = false;
@@ -30,6 +33,7 @@ class SharingWindow : public QWidget {
     void choosePublicCertificate();
     void publicCertificateReply(bool ok,const QJsonObject &certificate,const QJsonObject &state);
     void updateState(const QJsonObject &state);
+    void notifyFailure(const QString &body,const QString &identity,bool startup=false);
     void stopSharing();
     void closeEvent(QCloseEvent *event) override;
 

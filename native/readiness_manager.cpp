@@ -293,7 +293,8 @@ struct ReadinessManager::State {
             rows.push_back({{"address",probe.at("address")},{"status",value}});
         }
         json result={{"schemaVersion",1},{"status",status},{"reason",reason},{"addresses",rows},
-            {"externalReachability","unknown"},{"media","unknown"}};
+            {"externalReachability","unknown"},{"media","unknown"},
+            {"observer",{{"host",settings.host},{"port",settings.port}}}};
         if(media_port) {
             json media_rows=json::array();size_t verified=0;
             if(!media_endpoint.is_null())for(const auto &probe:probes)for(auto mode:{"relay","direct"}) {
