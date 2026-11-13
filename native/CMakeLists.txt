@@ -140,6 +140,11 @@ if(BUILD_TESTING)
   add_test(NAME readiness-media-owner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tests/readiness_media_owner_test.py $<TARGET_FILE:traverse-readiness-media> $<TARGET_FILE:readiness-media-owner-driver>)
   add_test(NAME probe-relay-broker-tls COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tests/probe_relay_broker_test.py $<TARGET_FILE:traverse-tls-frontend>)
   find_program(TRAVERSE_TEST_TURN_BINARY NAMES turnserver HINTS ${CMAKE_PREFIX_PATH} PATH_SUFFIXES bin REQUIRED)
+  # The persistent owner uses the same fixed sibling layout as the installed
+  # runtime. Fresh builds must not depend on a manually supplied test symlink.
+  if(NOT TRAVERSE_TEST_TURN_BINARY STREQUAL "${CMAKE_CURRENT_BINARY_DIR}/turnserver")
+    configure_file("${TRAVERSE_TEST_TURN_BINARY}" "${CMAKE_CURRENT_BINARY_DIR}/turnserver" COPYONLY)
+  endif()
   add_test(NAME readiness-probe-turn COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tests/readiness_probe_turn_test.py $<TARGET_FILE:readiness-probe-turn-driver> ${TRAVERSE_TEST_TURN_BINARY})
   set_tests_properties(readiness-probe-turn PROPERTIES TIMEOUT 30)
   add_test(NAME readiness-media-relay COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tests/readiness_media_relay_test.py $<TARGET_FILE:traverse-readiness-media> $<TARGET_FILE:probe-tls-relay-driver> $<TARGET_FILE:probe-relay-routes-driver> ${TRAVERSE_TEST_TURN_BINARY})

@@ -151,7 +151,7 @@ simple-log
                 stopping=time.monotonic();turn.terminate();turn.wait(timeout=5)
                 self.assertEqual(turn.returncode,0,'Dedicated relay did not exit gracefully')
                 print(json.dumps(dict(probeRelayGracefulStopSeconds=round(time.monotonic()-stopping,6))),flush=True)
-                for worker in workers:worker.close()
+                for worker in workers:worker.close(remote_ended=True)
                 workers=[]
                 ended=bridge.command(dict(op='stop'));self.assertEqual(ended['started'],ended['finished']);self.assertEqual(ended['failed'],0)
                 for port in allocated+[source_port,observer_port]:
