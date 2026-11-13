@@ -197,8 +197,12 @@ def main():
             wait(restarted,'Relaunch did not use saved endpoint',timeout=35);assert hashlib.sha256(public.read_bytes()).hexdigest()==root_hash
             browser=Browser(client,client/'relaunch',client_env);assert not browser.navigate('https://'+DOMAIN+':10443/').get('errorText');browser.wait(PAIRING_READY,'Same exported trust after next launch')
             x11('close','Traverse');process.wait(timeout=15);wait(lambda:not prefix_processes(),'Relaunch Stop left children');browser.close();browser=None
-            assert not any(name==DOMAIN for name,kind in dns.queries),'Hosts-only Chrome journey queried DNS for its URL'
-            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','hostsFileResolution':True,'testDomainDnsQueries':0,'sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
+            # Browser background queries do not require a DNS answer for hosts
+            # resolution. The fixture provides no address answer for this name;
+            # keep that proof distinct from the native resolver's zero-query contract.
+            assert dns.records[DOMAIN]=={1:'drop',28:'drop'},'Unexpected DNS answer enabled for hosts-only journey'
+            queries=[kind for name,kind in dns.queries if name==DOMAIN]
+            report={'status':'passed','scope':'Actual native main/setup/export on synthetic X11; offline separate Chrome UID/home/NSS; source size recorded, no physical or GNOME/KDE acceptance','hostsFileResolution':True,'testDomainDnsQueries':len(queries),'testDomainDnsQueryTypes':sorted(set(queries)),'testDomainDnsAddressAnswers':0,'withoutInternetRoute':True,'sourceVideoSize':video_size,'nativePeerState':native_peer,'packagedEntry':os.environ.get('TRAVERSE_TEST_HOST_PACKAGED_ENTRY')=='1','freshSetupWithoutJSON':True,'actualNativeExportPicker':True,'trustedOnlyExportedPublicFile':True,'initialChromeDistrust':True,'realVideoAndKeyControl':True,'settingsSavedNextLaunchWithoutDisconnect':True,'stopReleasedChromeHeldInputAndReapedRuntime':True,'relaunchUsedNewPortSameCAWithoutReimport':True,'browser':version}
             (evidence/'fresh-export-summary.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report),flush=True)
         except BaseException:
             diagnostic('failure-before-cleanup')
