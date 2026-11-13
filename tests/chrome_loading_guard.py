@@ -120,8 +120,17 @@ def verify_loading_guard(assets,evidence,chrome=Path('/usr/bin/google-chrome-sta
                         results.append(state.copy())
                     except BaseException:
                         errors.flush()
+                        debugger=profile/'DevToolsActivePort'
+                        state['launcherExit']=process.poll()
+                        state['debuggerFileExists']=debugger.exists()
+                        try:state['debuggerLineCount']=len(debugger.read_text().splitlines())
+                        except OSError:state['debuggerLineCount']=None
+                        # This profile only visits about:blank and the owned
+                        # dummy-code server; it never receives host authority.
+                        diagnostic=(directory/'browser-errors.txt').read_text(errors='replace')
+                        print(json.dumps({'loadingGuardFailure':state,'browserStderr':diagnostic}),flush=True)
                         (evidence/('loading-guard-'+mode+'-failure.json')).write_text(json.dumps(state,indent=2))
-                        (evidence/('loading-guard-'+mode+'-browser-errors.txt')).write_text((directory/'browser-errors.txt').read_text())
+                        (evidence/('loading-guard-'+mode+'-browser-errors.txt')).write_text(diagnostic)
                         raise
                     finally:
                         release.set()
