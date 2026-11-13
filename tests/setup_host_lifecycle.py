@@ -42,15 +42,19 @@ def main():
             config_parent=home/'alternate-config' if explicit_xdg else home/'.config'
             if explicit_xdg:env['XDG_CONFIG_HOME']=str(config_parent)
             config=config_parent/'traverse/config.json';adapter=runtime/'traverse/adapter.sock'
+            setup_stderr=root/'setup-stderr'
+            last_window_probe={}
             def launch():
                 command,application_env=host_command(executable,PREFIX,env)
-                return subprocess.Popen(command,env=application_env,user=65534,group=65534,extra_groups=[],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                with setup_stderr.open('ab') as diagnostic:
+                    return subprocess.Popen(command,env=application_env,user=65534,group=65534,extra_groups=[],stdout=subprocess.DEVNULL,stderr=diagnostic)
             def x11(*args):
                 result=subprocess.run(['/tmp/x11-probe',*args],env=env,text=True,capture_output=True)
                 assert result.returncode==0,('Owned X11 operation failed',args,result.stderr)
                 return json.loads(result.stdout)
             def window(title):
                 result=subprocess.run(['/tmp/x11-probe','window',title],env=env,text=True,capture_output=True)
+                last_window_probe.update(returncode=result.returncode,stderr=result.stderr)
                 return json.loads(result.stdout) if result.returncode==0 else None
             def type_text(text):
                 for character in text:x11('press','period' if character=='.' else character)
@@ -66,7 +70,18 @@ def main():
                     x11('capture',str(image))
                 assert not config.exists();x11('close','Traverse setup');process.wait(timeout=5);assert process.returncode==0
                 assert not config.exists() and not (home/'data/traverse').exists()
-                process=launch();wait(lambda:window('Traverse setup'),'Fresh setup did not reopen')
+                process=launch()
+                try:wait(lambda:window('Traverse setup'),'Fresh setup did not reopen')
+                except BaseException:
+                    # This branch precedes Start, configuration and pairing authority.
+                    diagnostic=dict(phase='fresh-setup-reopen',exit=process.poll(),probe=last_window_probe,
+                        stderr=setup_stderr.read_text(errors='replace'))
+                    if process.poll() is None:
+                        for name in ('status','wchan'):
+                            try:diagnostic[name]=Path(f'/proc/{process.pid}/{name}').read_text()
+                            except OSError as error:diagnostic[name]=str(error)
+                    print(json.dumps(diagnostic),flush=True)
+                    raise
                 x11('focus','Traverse setup');type_text(DOMAIN);x11('press','Tab')
                 x11('key','Control_L','down');x11('press','a');x11('key','Control_L','up');type_text(str(port))
                 x11('press','Tab')

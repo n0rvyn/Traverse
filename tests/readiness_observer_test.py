@@ -126,6 +126,32 @@ class Resolver(unittest.TestCase):
     def resolve(self,host,addresses,status):
         p=self.worker(host,addresses);out,err=p.communicate(timeout=8)
         self.assertEqual(err,b'');row=json.loads(out);self.assertEqual(row['schemaVersion'],2)
+        if row['status']!=status and os.environ.get('TRAVERSE_TEST_DNS_DIAGNOSTICS')=='1':
+            # Passive failure evidence only; keep the worker's original verdict/assertion.
+            code='''import ctypes,json,socket
+libc=ctypes.CDLL(None,use_errno=True)
+class Addrinfo(ctypes.Structure):pass
+Addrinfo._fields_=[('flags',ctypes.c_int),('family',ctypes.c_int),('socktype',ctypes.c_int),('protocol',ctypes.c_int),('addrlen',ctypes.c_uint),('addr',ctypes.c_void_p),('canonname',ctypes.c_void_p),('next',ctypes.POINTER(Addrinfo))]
+libc.getaddrinfo.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.POINTER(Addrinfo),ctypes.POINTER(ctypes.POINTER(Addrinfo))]
+libc.freeaddrinfo.argtypes=[ctypes.POINTER(Addrinfo)]
+libc.__h_errno_location.restype=ctypes.POINTER(ctypes.c_int)
+for family in (socket.AF_INET,socket.AF_INET6):
+    hints=Addrinfo();hints.family=family;hints.socktype=socket.SOCK_STREAM;answer=ctypes.POINTER(Addrinfo)()
+    ctypes.set_errno(0);libc.__h_errno_location()[0]=0
+    result=libc.getaddrinfo(HOST.encode(),None,ctypes.byref(hints),ctypes.byref(answer))
+    receipt=dict(family=family,eai=result,errno=ctypes.get_errno(),h_errno=libc.__h_errno_location()[0])
+    if answer:libc.freeaddrinfo(answer)
+    print(json.dumps(receipt),flush=True)
+'''
+            probe=subprocess.run([sys.executable,'-c','HOST='+repr(host)+'\n'+code],
+                user=65534,group=65534,extra_groups=[],env=clean_environment(),text=True,capture_output=True,timeout=8)
+            files={}
+            for name in ('/etc/nsswitch.conf','/etc/authselect/nsswitch.conf','/etc/resolv.conf','/usr/share/authselect/default/local/nsswitch.conf'):
+                try:files[name]=Path(name).read_text()
+                except OSError as error:files[name]=str(error)
+            print(json.dumps(dict(dnsDiagnostic=True,expected=status,actual=row['status'],files=files,
+                libc=os.confstr('CS_GNU_LIBC_VERSION'),
+                probeExit=probe.returncode,probeStdout=probe.stdout,probeStderr=probe.stderr,queries=self.dns.queries)),flush=True)
         self.assertEqual(row['status'],status);self.assertEqual(p.returncode,0 if status=='resolved' else 1)
         if status!='resolved':self.assertNotIn('addresses',row)
         return row
