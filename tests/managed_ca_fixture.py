@@ -43,7 +43,9 @@ class PrivateCA:
             'certificate': str(self.api_certificate), 'privateKey': str(self.api_key),
             'tlsPort': self.bridge.server_address[1], 'httpPort': free_port(), 'keyAlgorithm': 'ecdsa',
             'retryAfter': {'authz': 20 if slow else 1, 'order': 1}}}))
-        environment = dict(os.environ, PEBBLE_VA_NOSLEEP='1', PEBBLE_AUTHZREUSE='0')
+        # Positive issuance uses real nonce validation without Pebble's random
+        # fault injection. Explicit badNonce retry coverage lives in installed_issuer.
+        environment = dict(os.environ, PEBBLE_VA_NOSLEEP='1', PEBBLE_AUTHZREUSE='0', PEBBLE_WFE_NONCEREJECT='0')
         environment.pop('PEBBLE_VA_ALWAYS_VALID', None)
         # Same supported owned-parent guard as the existing private CA fixture;
         # install it before creating ANY observer/server Python thread.

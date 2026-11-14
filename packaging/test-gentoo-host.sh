@@ -209,6 +209,8 @@ from pathlib import Path
 value=json.loads(Path('/run/evidence/fresh-export-summary.json').read_text())
 assert value['status']=='passed' and value['packagedEntry']
 assert value['sourceVideoSize']=={'width':1280,'height':1024}
+assert value['pausedPresentationStoppedReceiptsWithoutDisconnect']
+assert value['resumedPresentationAdvancedSameGeneration']
 assert value['nativePeerState']['peerActive'] and value['nativePeerState']['controlOpen']
 assert value['nativePeerState']['rtcState']=='connected'
 assert value['nativePeerState']['health']['status']=='observed'

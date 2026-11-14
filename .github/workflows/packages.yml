@@ -92,6 +92,7 @@ jobs:
             .work/installed-chrome/*diagnostics.json
             .work/installed-chrome/*.png
             .work/installed-chrome/fresh-export-native.ppm
+            .work/installed-chrome/paused-video-native.ppm
             .work/installed-chrome/failure-after-consumed-pairing.ppm
           if-no-files-found: ignore
       - name: Preserve Gentoo synthetic Chrome acceptance evidence
@@ -105,6 +106,7 @@ jobs:
             .work/gentoo-chrome/fresh-export-chrome.png
             .work/gentoo-chrome/loading-guard-*.png
             .work/gentoo-chrome/fresh-export-native.ppm
+            .work/gentoo-chrome/paused-video-native.ppm
             .work/gentoo-chrome/failure-after-consumed-pairing.ppm
           if-no-files-found: ignore
       - name: Preserve synthetic installed-test failure images

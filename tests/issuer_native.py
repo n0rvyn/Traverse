@@ -308,7 +308,9 @@ def main():
                             'certificate': str(api_cert), 'privateKey': str(api_key), 'tlsPort': bridge.server_address[1], 'httpPort': free_port(),
                             'keyAlgorithm': 'ecdsa', 'retryAfter': {'authz': 1, 'order': 1}}}
         configuration = root/'pebble.json'; configuration.write_text(json.dumps(config))
-        environment = dict(os.environ, PEBBLE_VA_NOSLEEP='1', PEBBLE_AUTHZREUSE='100' if args.reuse_valid_authorizations else '0')
+        # Keep healthy issuance deterministic; installed_issuer forces badNonce
+        # separately and verifies retry with a fresh nonce.
+        environment = dict(os.environ, PEBBLE_VA_NOSLEEP='1', PEBBLE_AUTHZREUSE='100' if args.reuse_valid_authorizations else '0', PEBBLE_WFE_NONCEREJECT='0')
         environment.pop('PEBBLE_VA_ALWAYS_VALID', None)
         # Before starting any fixture thread, install the CA's owned-parent guard.
         assert threading.active_count() == 1
