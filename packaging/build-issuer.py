@@ -94,6 +94,7 @@ def main():
     parser.add_argument('--stage',type=Path,required=True)
     parser.add_argument('--sources',type=Path,required=True)
     parser.add_argument('--test-ca',action='store_true',help='Build the pinned private CA fixture, never part of runtime')
+    parser.add_argument('--test-ca-only',action='store_true',help='Build only the pinned private CA for exact-package reproduction; leave the runtime stage unchanged')
     args=parser.parse_args()
     work=args.work.resolve();stage=args.stage.resolve();sources=args.sources.resolve()
     policy=json.loads((ROOT/'packaging/runtime-manifest.json').read_text())['certificateIssuer']
@@ -118,6 +119,11 @@ def main():
     environment['GOPROXY']='https://proxy.golang.org,direct'
     if command([go,'env','GOVERSION'],env=environment).strip()!='go'+policy['goVersion']:
         raise ValueError('Issuer toolchain version mismatch')
+    if args.test_ca_only:
+        metadata=build_private_test_ca(go,tools,policy,environment)
+        metadata['goVersion']=policy['goVersion']
+        (work/'private-ca-build.json').write_text(json.dumps(metadata,indent=2)+'\n')
+        return
     source=work/'issuer-source'
     if source.exists():raise ValueError('Refusing to reuse an issuer source tree')
     shutil.copytree(ROOT/'issuer',source,ignore=shutil.ignore_patterns('vendor','._*','__pycache__'))

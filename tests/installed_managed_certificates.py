@@ -250,6 +250,64 @@ def changed_schedule(state):
     pending.replace(path)
 
 
+def renewal_observation(desktop, state, old_peer, validation_count):
+    """Only fixed synthetic state; never keys, accounts, orders or owner output."""
+    result = {'port':desktop.port,'launcherExit':desktop.launch.poll(),
+              'validationAttempts':desktop.ca.bridge.count()-validation_count}
+    try:
+        snapshot=desktop.snapshot()
+        result['frontend']={'present':snapshot is not None}
+        if snapshot:
+            result['frontend'].update(available=snapshot['available'],revision=snapshot['revision'],
+                changed=snapshot['fingerprint']!=old_peer,reloadErrorPresent=bool(snapshot['reloadError']))
+    except (OSError,ValueError,AssertionError,KeyError,TypeError):
+        result['frontend']={'readFailed':True}
+    try:
+        schedule=json.loads((state/'schedule.json').read_text())['schedule']
+        result['schedule']={key:schedule[key] for key in
+            ('renewAt','checkAt','issuing','uncertain','admissionPending','consentBlocked')}
+        result['schedule'].update(renewDue=schedule['renewAt']<=time.time(),
+                                  checkDue=schedule['checkAt']<=time.time())
+        result['pendingPresent']=(state/'pending.json').is_file()
+    except (OSError,ValueError,KeyError):
+        result['schedule']={'readFailed':True}
+    return result
+
+
+def retain_renewal_diagnostic(desktop, state, old_peer, started, deadline, latest, observations, outcome):
+    result={'syntheticRenewalDiagnostic':True,'port':desktop.port,
+            'outcome':outcome,
+            'launcherExit':desktop.launch.poll(),'elapsedSeconds':time.monotonic()-started,
+            'deadlineExpired':time.monotonic()>=deadline,'latestChanged':latest is not None,
+            'observations':observations,'children':[]}
+    for pid in descendants(desktop.launch.pid):
+        try:
+            proc=Path('/proc',str(pid));fields=dict(line.split(':',1) for line in (proc/'status').read_text().splitlines() if ':' in line)
+            result['children'].append({'name':(proc/'exe').resolve().name,'state':fields['State'].strip(),
+                                       'waitChannel':(proc/'wchan').read_text().strip()})
+        except OSError:
+            pass
+    public_bundle=state/'bundle.pem'
+    if public_bundle.is_file():
+        try:
+            certificate=subprocess.run(['openssl','x509','-in',str(public_bundle),'-noout','-fingerprint','-sha256'],
+                capture_output=True,text=True,timeout=5)
+            if certificate.returncode==0:
+                fingerprint=certificate.stdout.strip().split('=',1)[-1].replace(':','').lower()
+                result['bundleChanged']=fingerprint!=old_peer
+            else:result['bundleInspectionFailed']=True
+        except (OSError,subprocess.TimeoutExpired):
+            result['bundleInspectionFailed']=True
+    destination=os.environ.get('TRAVERSE_TEST_FAILURE_ARTIFACTS')
+    print(json.dumps(result),flush=True)
+    if destination:
+        try:
+            directory=Path(destination);directory.mkdir(parents=True,exist_ok=True)
+            (directory/f'managed-renewal-{os.getpid()}-{desktop.port}.json').write_text(json.dumps(result,indent=2)+'\n')
+        except OSError as error:
+            print(json.dumps({'renewalDiagnosticWriteError':type(error).__name__}),flush=True)
+
+
 def require_disposable_environment():
     # The SDK diagnostic uses private mount/network/PID namespaces instead of
     # Docker. Require evidence of every namespace transition and an isolated
@@ -303,12 +361,19 @@ def main():
                     snapshot = desktop.snapshot()
                     return snapshot if snapshot and snapshot['available'] and snapshot['fingerprint']!=old_peer else None
                 latest = None
-                deadline = time.monotonic()+40
+                started = time.monotonic();deadline = started+40;observations=[]
                 while latest is None:
                     latest = renewed()
-                    assert desktop.launch.poll() is None and time.monotonic()<deadline, 'Installed automatic renewal did not reach actual frontend'
+                    observation=renewal_observation(desktop,state,old_peer,validation_count)
+                    if not observations or observation!=observations[-1]['state']:
+                        observations.append({'elapsedSeconds':time.monotonic()-started,'state':observation})
+                    if desktop.launch.poll() is not None or time.monotonic()>=deadline:
+                        retain_renewal_diagnostic(desktop,state,old_peer,started,deadline,latest,observations,'failed')
+                        raise AssertionError('Installed automatic renewal did not reach actual frontend')
                     if latest is None:
                         time.sleep(.03)
+                if os.environ.get('TRAVERSE_TEST_RENEWAL_DIAGNOSTICS')=='1':
+                    retain_renewal_diagnostic(desktop,state,old_peer,started,deadline,latest,observations,'observed')
                 assert desktop.x11('query')['shift']==1 and ipc(desktop.adapter,'/state')['paired']
                 assert desktop.http(stream=held)[0]==200
                 assert hashlib.sha256(held.getpeercert(binary_form=True)).hexdigest()==old_peer
