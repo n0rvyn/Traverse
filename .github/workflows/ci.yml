@@ -17,6 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Test optional gateway namespace matcher
+        working-directory: packaging/proxy
+        env:
+          GOTOOLCHAIN: go1.27.4
+        run: go test -mod=readonly -p 1 ./...
       - run: bash -n packaging/build-runtime.sh packaging/test-deb.sh packaging/test-rpm.sh packaging/test-host-owner.sh packaging/test-host-chrome.sh packaging/test-gentoo-host.sh
       - run: sh -n packaging/runtime-entry.sh packaging/host-entry.sh packaging/configure-runtime.sh packaging/deb-postinst.sh packaging/deb-postrm.sh
   packages:

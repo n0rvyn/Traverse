@@ -415,6 +415,15 @@ if(BUILD_TESTING)
     $<TARGET_FILE:traverse-readiness-media> $<TARGET_FILE:traverse-service> $<TARGET_FILE:traverse-adapter>
     $<TARGET_FILE:owner-state-probe> ${CMAKE_CURRENT_SOURCE_DIR}/../web $<TARGET_FILE:traverse-readiness-observer> $<TARGET_FILE:traverse-readiness-agent> $<TARGET_FILE:readiness-manager-probe>)
   set_tests_properties(readiness-observer-media PROPERTIES TIMEOUT 120)
+  set(TRAVERSE_TEST_PROXY_BINARY "" CACHE FILEPATH "Optional matching shared gateway for real observer checks")
+  if(TRAVERSE_TEST_PROXY_BINARY)
+    add_test(NAME readiness-shared-proxy COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/../tests/readiness_proxy_observer_test.py
+      $<TARGET_FILE:traverse-readiness-media> $<TARGET_FILE:traverse-service> $<TARGET_FILE:traverse-adapter>
+      $<TARGET_FILE:owner-state-probe> ${CMAKE_CURRENT_SOURCE_DIR}/../web $<TARGET_FILE:traverse-readiness-observer>
+      $<TARGET_FILE:traverse-readiness-agent> $<TARGET_FILE:readiness-manager-probe> ${TRAVERSE_TEST_PROXY_BINARY})
+    set_tests_properties(readiness-shared-proxy PROPERTIES TIMEOUT 120)
+  endif()
   set_tests_properties(readiness-service-isolation PROPERTIES TIMEOUT 90)
   add_test(NAME loopback-service-boundaries COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/../tests/loopback_service_test.py $<TARGET_FILE:traverse-service>
