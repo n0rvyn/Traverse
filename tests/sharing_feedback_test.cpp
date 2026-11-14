@@ -78,6 +78,9 @@ class SharingFeedbackTests:public QObject {
         value["publicTlsSource"]="proxy";window.updateState(value);
         QCOMPARE(window.trust_instruction->text(),QString::fromUtf8("This URL uses your proxy’s certificate."));
         QVERIFY(window.export_ca->isEnabled());
+        window.updateState({});
+        QCOMPARE(window.trust_instruction->text(),QString::fromUtf8("This URL uses your proxy’s certificate."));
+        window.updateState(value);
         auto screenshot=qEnvironmentVariable("TRAVERSE_TEST_PROXY_HINT_SCREENSHOT");
         if(!screenshot.isEmpty()) {window.show();QApplication::processEvents();QVERIFY(window.grab().save(screenshot));}
         value["publicTlsSource"]="host";window.updateState(value);
