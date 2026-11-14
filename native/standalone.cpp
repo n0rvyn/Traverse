@@ -53,13 +53,14 @@ class Reservation {
 
   public:
     unsigned short port;
-    Reservation() {
+    explicit Reservation(unsigned short requested_port = 0) {
         fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (fd < 0)
             throw std::runtime_error("Cannot reserve private backend port");
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(requested_port);
         socklen_t size = sizeof(address);
         if (bind(fd, reinterpret_cast<sockaddr *>(&address), size) ||
             getsockname(fd, reinterpret_cast<sockaddr *>(&address), &size)) {
@@ -245,12 +246,12 @@ bool https_ready(const EndpointSettings &settings) {
     socklen_t size = sizeof(*v4);
     if (inet_pton(AF_INET, host.c_str(), &v4->sin_addr) == 1) {
         v4->sin_family = AF_INET;
-        v4->sin_port = htons(settings.port);
+        v4->sin_port = htons(settings.frontend_port());
     } else {
         family = AF_INET6;
         size = sizeof(*v6);
         v6->sin6_family = AF_INET6;
-        v6->sin6_port = htons(settings.port);
+        v6->sin6_port = htons(settings.frontend_port());
         if (inet_pton(AF_INET6, host.c_str(), &v6->sin6_addr) != 1)
             throw std::runtime_error("Invalid local HTTPS probe address");
     }
@@ -349,6 +350,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         host.bind(
             [&] {
                 json state = {{"configuredUrl", settings.public_url()},
+                              {"publicTlsSource", settings.proxy_tls ? "proxy" : "host"},
                               {"externalReachability", "unknown"},
                               {"localHttps", {{"status", https_verified ? "passed" : "pending"}}},
                               {"authority", {{"status", "unavailable"}}},
@@ -461,7 +463,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
                 return 0;
         }
     }
-    Reservation http, turn;
+    Reservation http, turn(settings.turn_backend_port);
     auto addresses = relay_addresses();
     auto username = "traverse-" + random_secret(16), password = random_secret(32);
     std::string config = "listening-ip=127.0.0.1\nlistening-port=" + std::to_string(turn.port) +
@@ -576,7 +578,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     std::vector<std::string> frontend_arguments = {"--host",
                                                    settings.listen_address,
                                                    "--port",
-                                                   std::to_string(settings.port),
+                                                   std::to_string(settings.frontend_port()),
                                                    "--http-port",
                                                    std::to_string(http.port),
                                                    "--turn-port",
@@ -624,7 +626,7 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
     if (automatic)
         frontend_arguments.insert(
             frontend_arguments.end(),
-            {"--acme-socket", settings.port == 443
+            {"--acme-socket", settings.frontend_port() == 443
                                   ? children.certificates->broker()
                                   : (sockets.directory / "a").string()});
     bool proof_only = automatic && !children.certificates->application().available;
@@ -632,15 +634,15 @@ int standalone(const EndpointSettings &requested, const std::filesystem::path &b
         auto arguments = frontend_arguments;
         if (proof)
             arguments.insert(arguments.end(), {"--challenge-only", "true"});
-        children.frontend = start("frontend", "traverse-tls-frontend", arguments, settings.port);
+        children.frontend = start("frontend", "traverse-tls-frontend", arguments, settings.frontend_port());
         if (json::parse(children.frontend->ready_line(pump_owner)).value("port", 0) !=
-            settings.port)
+            settings.frontend_port())
             throw std::runtime_error("TLS listener readiness response invalid");
     };
     launch_frontend(proof_only);
     if (automatic) {
-        bool validation_ready = settings.port == 443;
-        if (settings.port != 443) {
+        bool validation_ready = settings.frontend_port() == 443;
+        if (settings.frontend_port() != 443) {
             try {
                 children.validation =
                     start("frontend", "traverse-tls-frontend",

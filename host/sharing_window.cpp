@@ -168,6 +168,9 @@ void SharingWindow::updateState(const QJsonObject &state) {
     if (closing) return;
     export_available=!state.isEmpty()&&state.value("localHttps").toObject().value("status").toString()=="passed"&&
         state.value("issuer").toObject().value("localAuthority").toObject().value("available").toBool();
+    trust_instruction->setText(state.value("publicTlsSource").toString()=="proxy"
+        ? QString::fromUtf8("This URL uses your proxy’s certificate.")
+        : QString("Trust this CA once on each Chrome client."));
     if(export_available){export_ca->show();trust_instruction->show();}
     export_ca->setEnabled(export_available&&!export_pending&&!export_writing);
     if (state.isEmpty()) {

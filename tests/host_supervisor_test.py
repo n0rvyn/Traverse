@@ -25,9 +25,9 @@ def wire(value):
     return struct.pack('!I',len(body))+body
 
 
-def desktop_stats(context,port,origin,base,token):
+def desktop_stats(context,port,origin,base,token,connect_port=None):
     connection=http.client.HTTPSConnection(DOMAIN,port,context=context,timeout=5)
-    connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=5),server_hostname=DOMAIN)
+    connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',connect_port or port),timeout=5),server_hostname=DOMAIN)
     try:
         connection.request('GET',base+'api/stats',headers={'Origin':origin,'Authorization':'Bearer '+token})
         response=connection.getresponse()
@@ -57,6 +57,7 @@ def broker(config_path,root_parent):
         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL if os.environ.get('TRAVERSE_TEST_DISCARD_NATIVE_STDERR')=='1' else Path(config_path).with_name('native-fixture-stderr.txt').open('w'))
     inherited=child.fileno();child.close();incoming=bytearray();serial=0;token=None;last_state={};known_code=None
     config=json.loads(Path(config_path).read_text());port=config.get('port',443)
+    connect_port=config.get('listenPort',port)
     base=config.get('basePath','/');origin='https://'+DOMAIN+('' if port==443 else ':'+str(port))
     context=ssl.create_default_context(cafile=config.get('certificateSettings',{}).get('certificateTrustFile') or env.get('SSL_CERT_FILE'))
     adapter=Path(env['XDG_RUNTIME_DIR'])/'traverse/adapter.sock'
@@ -89,7 +90,7 @@ def broker(config_path,root_parent):
             'phase':state.get('phase'),'stage':state.get('stage'),
             'supervisorPid':state.get('supervisorPid'),'instance':state.get('instance'),
             'localHttps':state.get('localHttps'),'urlCheck':state.get('urlCheck'),'certificate':state.get('certificate'),
-            'configuredUrl':state.get('configuredUrl'),
+            'configuredUrl':state.get('configuredUrl'),'publicTlsSource':state.get('publicTlsSource'),
             'authority':{key:authority[key] for key in ('codeStatus','armed','paired') if key in authority},
             'peer':state.get('peer'),'issuer':state.get('issuer')}
     print(json.dumps({'brokerReady':True,'launcherPid':backend.pid,'ownerFd':inherited}),flush=True)
@@ -113,7 +114,7 @@ def broker(config_path,root_parent):
                     assert len(roots)==1,'Fresh local fixture authority is not unique'
                     context=ssl.create_default_context(cafile=str(roots[0]))
                 connection=http.client.HTTPSConnection(DOMAIN,port,context=context,timeout=5)
-                connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=5),server_hostname=DOMAIN)
+                connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',connect_port),timeout=5),server_hostname=DOMAIN)
                 try:
                     connection.request('POST',base+'api/pair',json.dumps({'code':code}),
                         {'Origin':origin,'Content-Type':'application/json'})
@@ -132,7 +133,7 @@ def broker(config_path,root_parent):
                     for method in ('GET','POST'):
                         for supplied_origin in (origin,'https://untrusted.example.test'):
                             connection=http.client.HTTPSConnection(DOMAIN,port,context=context,timeout=5)
-                            connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=5),server_hostname=DOMAIN)
+                            connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',connect_port),timeout=5),server_hostname=DOMAIN)
                             headers={'Origin':supplied_origin,'Content-Type':'application/json',
                                 'X-Forwarded-For':'127.0.0.1','X-Forwarded-Host':'localhost'}
                             if token:headers['Authorization']='Bearer '+token
@@ -144,7 +145,7 @@ def broker(config_path,root_parent):
                                 checked+=1
                             finally:connection.close()
                 if token:
-                    status,body=desktop_stats(context,port,origin,base,token)
+                    status,body=desktop_stats(context,port,origin,base,token,connect_port)
                     assert status==200 and code.encode() not in body
                     assert b'"code"' not in body and b'"authority"' not in body
                 result={'publicTlsOwnerRoutesDenied':checked,'authorizedStatsCodeFree':bool(token)}

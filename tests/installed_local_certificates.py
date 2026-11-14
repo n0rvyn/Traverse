@@ -20,11 +20,13 @@ from host_supervisor_test import OwnerFixture
 from installed_managed_certificates import PREFIX, prefix_processes, require_disposable_environment
 from installed_standalone import alive, descendants, free_port, wait
 from issuer_native import DOMAIN
+from installed_turn import sockets
 
 
 def main():
     require_disposable_environment()
     app_port = int(os.environ.get('TRAVERSE_TEST_APP_PORT', '443'))
+    listen_port = int(os.environ.get('TRAVERSE_TEST_LISTEN_PORT', str(app_port)))
     for ending in ('stop', 'eof', 'death', 'launcher-death'):
         with tempfile.TemporaryDirectory(prefix='local-installed-') as temporary:
             root = Path(temporary); root.chmod(0o755)
@@ -33,8 +35,14 @@ def main():
             xauthority = home/'Xauthority'; shutil.copyfile(os.environ['XAUTHORITY'], xauthority)
             xauthority.chmod(0o600); os.chown(xauthority, 65534, 65534)
             config = home/'config.json'
-            config.write_text(json.dumps({'schemaVersion': 1, 'domain': DOMAIN, 'port': app_port,
-                'basePath': '/remote/', 'listenAddress': '127.0.0.1', 'certificateSettings': {'mode': 'local'}}))
+            configuration = {'schemaVersion': 1, 'domain': DOMAIN, 'port': app_port,
+                'basePath': '/remote/', 'listenAddress': '127.0.0.1', 'certificateSettings': {'mode': 'local'}}
+            if listen_port != app_port:
+                turn_port = free_port()
+                while turn_port in (app_port, listen_port):
+                    turn_port = free_port()
+                configuration.update(listenPort=listen_port, turnBackendPort=turn_port, proxyTls=True)
+            config.write_text(json.dumps(configuration))
             config.chmod(0o600); os.chown(config, 65534, 65534)
             environment = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home/'data'),
                 XDG_RUNTIME_DIR=str(runtime), XDG_CACHE_HOME=str(home/'cache'), XAUTHORITY=str(xauthority))
@@ -42,8 +50,9 @@ def main():
             owner = occupied = None
             baseline = prefix_processes()
             try:
-                if app_port != 443:
-                    occupied = socket.socket(); occupied.bind(('127.0.0.1', 443)); occupied.listen(1)
+                occupied_port = app_port if listen_port != app_port else 443
+                if listen_port != app_port or app_port != 443:
+                    occupied = socket.socket(); occupied.bind(('127.0.0.1', occupied_port)); occupied.listen(1)
                 owner = OwnerFixture(desktop)
                 def ready():
                     state = owner.call('status')
@@ -54,6 +63,18 @@ def main():
                 assert state
                 origin = 'https://'+DOMAIN+('' if app_port == 443 else ':'+str(app_port))
                 assert state['configuredUrl'] == origin+'/remote/'
+                assert state['publicTlsSource'] == ('proxy' if listen_port != app_port else 'host')
+                if listen_port != app_port:
+                    actors = {name: [] for name in ('traverse-tls-frontend', 'turnserver', 'traverse-service')}
+                    for pid in prefix_processes()-baseline:
+                        name = (Path('/proc')/str(pid)/'exe').resolve().name
+                        if name in actors:
+                            actors[name].append(pid)
+                    assert all(len(pids)==1 for pids in actors.values()), actors
+                    assert sockets(actors['traverse-tls-frontend'][0]) == [('tcp', f'0100007F:{listen_port:04X}')]
+                    assert sockets(actors['turnserver'][0]) == [('tcp', f'0100007F:{turn_port:04X}')]
+                    command = (Path('/proc')/str(actors['traverse-service'][0])/'cmdline').read_bytes().split(b'\0')
+                    assert command[command.index(b'--udp-port')+1] == str(app_port).encode()
                 assert not state['issuer']['operationActive'] and state['certificate']['available']
                 authorities = list((home/'data/traverse/certificates').iterdir()); assert len(authorities) == 1
                 authority = authorities[0]; public = authority/'local-ca.pem'
@@ -68,13 +89,13 @@ def main():
                 # A real default client context rejects this CA before the
                 # fixture explicitly selects its public certificate.
                 try:
-                    with ssl.create_default_context().wrap_socket(socket.create_connection(('127.0.0.1', app_port), timeout=3), server_hostname=DOMAIN):
+                    with ssl.create_default_context().wrap_socket(socket.create_connection(('127.0.0.1', listen_port), timeout=3), server_hostname=DOMAIN):
                         raise AssertionError('Untrusted local CA unexpectedly accepted')
                 except ssl.SSLCertVerificationError:
                     pass
                 context = ssl.create_default_context(cafile=str(public))
                 connection = http.client.HTTPSConnection(DOMAIN, app_port, context=context, timeout=5)
-                connection.sock = context.wrap_socket(socket.create_connection(('127.0.0.1', app_port), timeout=5), server_hostname=DOMAIN)
+                connection.sock = context.wrap_socket(socket.create_connection(('127.0.0.1', listen_port), timeout=5), server_hostname=DOMAIN)
                 connection.request('GET', '/remote/'); response = connection.getresponse()
                 assert response.status == 200; response.read(); connection.close()
                 assert owner.call('pair')['paired']
@@ -102,13 +123,20 @@ def main():
                     assert owner.call('wait-stopped') == {'stopped': True, 'exit': 0}
                 wait(lambda: not any(alive(pid) for pid in owned), 'Local certificate child survived owner loss', timeout=12)
                 wait(lambda: prefix_processes() == baseline, 'Local certificate runtime survived stop', timeout=5)
+                if listen_port != app_port:
+                    for port in (listen_port, turn_port):
+                        with socket.socket() as reusable:
+                            reusable.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            reusable.bind(('127.0.0.1', port))
                 assert before == {name: hashlib.sha256((authority/name).read_bytes()).hexdigest() for name in before}
                 if occupied:
-                    assert occupied.getsockname()[1] == 443
+                    assert occupied.getsockname()[1] == occupied_port
                 print(json.dumps({'ending': ending, 'port': app_port, 'configuredUrl': state['configuredUrl'],
                     'localHttps': True, 'defaultTrustRejected': True, 'explicitFixtureTrustPassed': True,
                     'realPairing': True, 'heldInputReleased': True, 'allOwnedReaped': True,
-                    'authorityPreserved': True, 'occupiedStandardPortPreserved': occupied is not None,
+                    'authorityPreserved': True, 'occupiedStandardPortPreserved': occupied is not None and occupied_port==443,
+                    'occupiedPublicPortPreserved': occupied is not None and occupied_port==app_port,
+                    'backendPort': listen_port, 'fixedPrivateBindingsVerified': listen_port!=app_port,
                     'publicOnlyExportMatchesTrustRoot': True, 'changedExportRejectedWithoutRevokingInput': True,
                     'scope': 'Installed entry/HTTPS/private owner; no Chrome trust or video claim'}), flush=True)
             finally:

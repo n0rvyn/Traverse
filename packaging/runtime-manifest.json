@@ -49,7 +49,14 @@
       "name": "cpp-httplib",
       "version": "0.51.0",
       "url": "https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.51.0.tar.gz",
-      "sha256": "d740ced75352f44e9d66d08806dc231b5621bb3592b5a5d5b2bd890a9a9d86cc"
+      "sha256": "d740ced75352f44e9d66d08806dc231b5621bb3592b5a5d5b2bd890a9a9d86cc",
+      "localPatches": [
+        {
+          "file": "patches/cpp-httplib-0.51.0-interim-response-headers.patch",
+          "sha256": "017a07154c5848b3775172e508373632dd9abb579c1978f26ed8e65c62bfcfb5",
+          "scope": "Consume complete interim 100 Continue headers with existing strict parser; retain Expect, final-response validation and all TLS/authentication checks."
+        }
+      ]
     },
     {
       "name": "coturn",

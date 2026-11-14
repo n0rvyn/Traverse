@@ -1,6 +1,7 @@
 #pragma once
 #include "readiness_challenge.hpp"
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,8 @@ namespace traverse {
 struct ReadinessTarget {
     std::string host, address, base_path, origin, ca_file;
     int port;
+    // Omitted inherits HTTPS trust; an explicit empty value selects system roots.
+    std::optional<std::string> relay_ca_file;
 };
 struct ReadinessVerification {
     ReadinessTarget target;

@@ -64,6 +64,9 @@ class SettingsDialogTests:public QObject {
         if(!output.isEmpty())QVERIFY(reopened.grab().save(output));
     }
     void automaticAndNonVisibleFieldsPreserved() {
+        original["listenPort"] = 18443;
+        original["proxyTls"] = true;
+        original["turnBackendPort"] = 18444;
         original["certificateSettings"]={{"mode","automatic"},{"directory","https://ca.example.test/directory"},
             {"termsURL","https://ca.example.test/terms"},{"termsAgreed",true},{"apiTrustFile",(root->path()+"/api-root.pem").toStdString()},{"certificateTrustFile",(root->path()+"/leaf-root.pem").toStdString()}};
         original["observerSettings"]={{"host","observer.example.test"},{"port",9443},{"caFile","observer-root.pem"},

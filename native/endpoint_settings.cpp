@@ -161,11 +161,22 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
         if (!config["schemaVersion"].is_number_integer() || config["schemaVersion"] != 1)
             throw std::runtime_error("Unsupported schemaVersion");
         fields(config, {"schemaVersion", "domain", "port", "basePath", "certificate", "privateKey",
-                        "display", "listenAddress", "certificateSettings", "observerSettings"});
+                        "display", "listenAddress", "certificateSettings", "observerSettings",
+                        "listenPort", "turnBackendPort", "proxyTls"});
         if(config.contains("observerSettings"))
             settings.observer=ObserverSettings::parse(config.at("observerSettings"),configuration_directory);
+        if (config.contains("proxyTls")) {
+            if (!config.at("proxyTls").is_boolean())
+                throw std::runtime_error("proxyTls must be a boolean");
+            settings.proxy_tls = config.at("proxyTls").get<bool>();
+        }
         settings.domain = normalize_host(text(config, "domain"));
         settings.port = port_value(config, "port", 443);
+        if (config.contains("listenPort"))
+            settings.listen_port = port_value(config, "listenPort", settings.port);
+        settings.turn_backend_port = port_value(config, "turnBackendPort", 0);
+        if (settings.turn_backend_port && settings.turn_backend_port == settings.frontend_port())
+            throw std::runtime_error("turnBackendPort must differ from the TLS listener port");
         if (chrome_restricted(settings.port))
             throw std::runtime_error("Chrome blocks this HTTPS port; choose another port");
         settings.media_port = settings.port;
@@ -189,6 +200,9 @@ EndpointSettings EndpointSettings::parse(const json &config, const std::string &
         if (inet_pton(AF_INET, settings.listen_address.c_str(), &v4) != 1 &&
             inet_pton(AF_INET6, settings.listen_address.c_str(), &v6) != 1)
             throw std::runtime_error("listenAddress must be a numeric IP address");
+        if (settings.frontend_port() != settings.port &&
+            (ntohl(v4.s_addr) >> 24) != 127 && !IN6_IS_ADDR_LOOPBACK(&v6))
+            throw std::runtime_error("A separate listenPort requires a loopback listenAddress");
     }
     return settings;
 }

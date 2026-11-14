@@ -54,6 +54,7 @@ build_meson pipewire -Dgstreamer=enabled -Dgstreamer-device-provider=disabled \
   -Dsystemd-system-service=disabled -Dsystemd-user-service=disabled \
   -Dsupport=enabled -Daudioconvert=enabled -Dvideoconvert=enabled \
   -Daudiomixer=disabled -Dcontrol=disabled -Daudiotestsrc=disabled -Dvideotestsrc=disabled -Dvolume=disabled
+patch --forward --fuzz=0 -p1 -d "$work/sources/cpp-httplib" < "$root/patches/cpp-httplib-0.51.0-interim-response-headers.patch"
 cmake -S "$work/sources/cpp-httplib" -B "$work/build-httplib" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib \
   -DHTTPLIB_COMPILE=ON -DBUILD_SHARED_LIBS=ON -DHTTPLIB_REQUIRE_OPENSSL=ON -DHTTPLIB_USE_ZLIB_IF_AVAILABLE=OFF -DHTTPLIB_USE_BROTLI_IF_AVAILABLE=OFF -DHTTPLIB_USE_ZSTD_IF_AVAILABLE=OFF
 cmake --build "$work/build-httplib" -j "${BUILD_JOBS:-2}"

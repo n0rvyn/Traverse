@@ -68,6 +68,21 @@ class SharingFeedbackTests:public QObject {
         bus.asyncCall(call);QTRY_COMPARE(receiver.notices.size(),1);receiver.notices.clear();
     }
     void init(){receiver.notices.clear();receiver.hold_reply=false;}
+    void certificateHintFollowsActiveOwner() {
+        SharingWindow window("/unused","/unused/config.json");auto value=state();
+        value["configuredUrl"]="https://apex.norvyn.com/remote/";
+        value["issuer"]=QJsonObject{{"localAuthority",QJsonObject{{"available",true}}}};
+        window.updateState(value);
+        QCOMPARE(window.trust_instruction->text(),QString("Trust this CA once on each Chrome client."));
+        QVERIFY(window.export_ca->isEnabled());
+        value["publicTlsSource"]="proxy";window.updateState(value);
+        QCOMPARE(window.trust_instruction->text(),QString::fromUtf8("This URL uses your proxy’s certificate."));
+        QVERIFY(window.export_ca->isEnabled());
+        auto screenshot=qEnvironmentVariable("TRAVERSE_TEST_PROXY_HINT_SCREENSHOT");
+        if(!screenshot.isEmpty()) {window.show();QApplication::processEvents();QVERIFY(window.grab().save(screenshot));}
+        value["publicTlsSource"]="host";window.updateState(value);
+        QCOMPARE(window.trust_instruction->text(),QString("Trust this CA once on each Chrome client."));
+    }
     void checkerAndIdleMedia() {
         SharingWindow window("/unused","/unused/config.json");window.updateState(state());
         QVERIFY(window.url_check->text().contains("observer.example.test:9443"));

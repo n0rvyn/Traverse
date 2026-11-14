@@ -1,0 +1,12 @@
+--- a/httplib.h
++++ b/httplib.h
+@@ -13046,7 +13046,8 @@
+ 
+   // Ignore '100 Continue' (only when not using Expect: 100-continue explicitly)
+   while (skip_100_continue && res.status == StatusCode::Continue_100) {
+-    if (!line_reader.getline()) { return false; } // CRLF
++    Headers interim_headers;
++    if (!detail::read_headers(strm, interim_headers)) { return false; }
+     if (!line_reader.getline()) { return false; } // next response line
+ 
+     if (!std::regex_match(line_reader.ptr(), m, re)) { return false; }

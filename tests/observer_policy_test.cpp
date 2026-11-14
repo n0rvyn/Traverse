@@ -65,6 +65,25 @@ int main(){try{
     json lease={{"instance",std::string(32,'c')},{"id",std::string(32,'d')},{"token",std::string(64,'e')},{"nonce",std::string(64,'f')}};
     auto request=reg.verification("::1",lease);
     require(traverse::parse_readiness_verification(request).target.address=="::1","Registered pin lost");
+    require(!request.at("target").contains("relayCaFile"),"Old registration wire shape changed");
+    auto split_roots=config;
+    split_roots["registrations"][0]["target"]["caFile"]="/private/public-root.pem";
+    split_roots["registrations"][0]["target"]["relayCaFile"]="/private/host-root.pem";
+    auto split=traverse::ObserverConfiguration::parse(split_roots).registrations.begin()->second;
+    auto split_request=split.verification("::1",lease);
+    require(split_request.at("target").at("caFile")=="/private/public-root.pem" &&
+            split_request.at("target").at("relayCaFile")=="/private/host-root.pem",
+            "Probe trust replaced public HTTPS trust or disappeared in serialization");
+    require(traverse::parse_readiness_verification(split_request).target.relay_ca_file==
+            std::optional<std::string>("/private/host-root.pem"),"Probe CA disappeared in the worker target");
+    split_roots["registrations"][0]["target"]["relayCaFile"]="";
+    split=traverse::ObserverConfiguration::parse(split_roots).registrations.begin()->second;
+    require(split.verification("::1",lease).at("target").at("relayCaFile")=="",
+            "Explicit system trust silently inherited the HTTPS root");
+    for(auto invalid:std::vector<json>{nullptr,true,0,json::array(),json::object(),"bad\nroot",std::string("bad\0root",8)}) {
+        bad=split_roots;bad["registrations"][0]["target"]["relayCaFile"]=invalid;
+        rejected([&]{traverse::ObserverConfiguration::parse(bad);});
+    }
     rejected([&]{reg.verification("192.0.2.1",lease);});
     lease["controller"]=true;rejected([&]{reg.verification("::1",lease);});
     auto literal=resolution;literal.host="127.0.0.1";

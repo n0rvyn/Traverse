@@ -34,7 +34,8 @@ int main() {
             rejects([&] { EndpointSettings::normalize_host(host); });
         auto settings = EndpointSettings::parse(config, ":99");
         require(settings.mode == EndpointMode::Standalone && settings.port == 443 &&
-                    settings.media_port == 443,
+                    settings.media_port == 443 && settings.frontend_port() == 443 &&
+                    settings.turn_backend_port == 0,
                 "New default is not one port443");
         require(settings.origin == "https://desktop.example.com" &&
                     settings.public_url() == "https://desktop.example.com/",
@@ -56,6 +57,46 @@ int main() {
         require(prefixed.public_url() == "https://desktop.example.com:7443/traverse/v1.2/" &&
                     prefixed.media_port == 7443,
                 "Custom URL/media port diverged");
+        auto proxied = config;
+        proxied["listenAddress"] = "127.0.0.1";
+        proxied["listenPort"] = 18443;
+        proxied["turnBackendPort"] = 18444;
+        proxied["basePath"] = "/remote/";
+        auto backend = EndpointSettings::parse(proxied);
+        require(backend.frontend_port() == 18443 && backend.turn_backend_port == 18444,
+                "Explicit loopback bindings were not retained");
+        require(backend.public_url() == "https://desktop.example.com/remote/" &&
+                    backend.turns_url() == "turns:desktop.example.com:443?transport=tcp" &&
+                    backend.media_port == 443,
+                "Private bindings changed public URLs or media port");
+        require(!backend.proxy_tls, "Private ports alone must not imply proxy TLS");
+        proxied["proxyTls"] = true;
+        require(EndpointSettings::parse(proxied).proxy_tls, "Explicit proxy TLS metadata lost");
+        for (json bad : {json(1), json("true"), json(nullptr)}) {
+            auto invalid = proxied;
+            invalid["proxyTls"] = bad;
+            rejects([&] { EndpointSettings::parse(invalid); });
+        }
+        auto loopback6 = proxied;
+        loopback6["listenAddress"] = "::1";
+        require(EndpointSettings::parse(loopback6).frontend_port() == 18443,
+                "IPv6 loopback backend was rejected");
+        for (const auto &address : {"0.0.0.0", "192.0.2.1", "::", "2001:db8::1"}) {
+            auto exposed = proxied;
+            exposed["listenAddress"] = address;
+            rejects([&] { EndpointSettings::parse(exposed); });
+        }
+        auto collision = proxied;
+        collision["turnBackendPort"] = 18443;
+        rejects([&] { EndpointSettings::parse(collision); });
+        for (const auto &field : {"listenPort", "turnBackendPort"}) {
+            for (json bad : {json(0), json(-1), json(65536), json(true), json("18443"),
+                             json(18443.0), json::parse("18446744073709552616")}) {
+                auto invalid = proxied;
+                invalid[field] = bad;
+                rejects([&] { EndpointSettings::parse(invalid); });
+            }
+        }
         auto relative = config;
         relative["certificate"] = "cert with spaces.pem";
         relative["privateKey"] = "key.pem";

@@ -62,6 +62,7 @@ python3 /src/tests/readiness_service_test.py --prefix /opt/traverse --agent /opt
 xvfb-run -a python3 /src/tests/installed_readiness.py
 xvfb-run -a python3 /src/tests/installed_host_url_check.py
 xvfb-run -a python3 /src/tests/installed_local_certificates.py
+TRAVERSE_TEST_LISTEN_PORT=18443 xvfb-run -a python3 /src/tests/installed_local_certificates.py
 TRAVERSE_TEST_APP_PORT=9443 xvfb-run -a python3 /src/tests/installed_local_certificates.py
 export TRAVERSE_TEST_FAILURE_ARTIFACTS=/src/.work/managed-failure-images
 bash /src/packaging/test-host-owner.sh

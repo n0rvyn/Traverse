@@ -29,6 +29,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.observed.append((self.path,dict(self.headers),json.loads(body)))
         mode=self.server.mode
         if mode=='drop':return
+        if mode=='interim-truncated':
+            self.wfile.write(b'HTTP/1.1 100 Continue\r\nServer: incomplete');return
+        if mode in ('interim-bare','interim-headers','interim-repeated'):
+            if mode=='interim-repeated':self.wfile.write(b'HTTP/1.1 100 Continue\r\n\r\n')
+            self.wfile.write(b'HTTP/1.1 100 Continue\r\n')
+            if mode!='interim-bare':self.wfile.write(b'Server: gateway\r\nX-Interim: one\r\n')
+            self.wfile.write(b'\r\n')
         if mode=='redirect':
             self.send_response(307);self.send_header('Location',self.server.location);self.send_header('Content-Length','0');self.end_headers();return
         row=dict(schemaVersion=1,receipt={key:value for key,value in LEASE.items() if key!='token'})
@@ -65,7 +72,18 @@ class Verifier(unittest.TestCase):
         return server
     def worker(self,row):
         p=subprocess.Popen([WORKER],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        self.workers.append(p);p.stdin.write(json.dumps(row).encode());p.stdin.close();p.stdin=None
+        self.workers.append(p)
+        expected=os.environ.get('TRAVERSE_TEST_EXPECTED_HTTPLIB')
+        if expected:
+            deadline=time.monotonic()+3
+            while True:
+                self.assertIsNone(p.poll(),'Verifier exited before library identity witness')
+                maps=Path(f'/proc/{p.pid}/maps').read_text().splitlines()
+                libraries={Path(line.split()[-1]).resolve() for line in maps if 'libcpp-httplib.so' in line}
+                if libraries:
+                    self.assertEqual(libraries,{Path(expected).resolve()});break
+                self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+        p.stdin.write(json.dumps(row).encode());p.stdin.close();p.stdin=None
         return p
     def result(self,row,status):
         p=self.worker(row);out,err=p.communicate(timeout=8)
@@ -92,6 +110,19 @@ class Verifier(unittest.TestCase):
         untrusted=copy.deepcopy(row);untrusted['target']['caFile']='';self.result(untrusted,'tlsFailed')
         wrong=copy.deepcopy(row);wrong['target']['host']='wrong.example.test';self.result(wrong,'tlsFailed')
         expired=self.server(self.expired);self.result(request(expired.server_port,self.expired),'tlsFailed')
+    def test_valid_interim_headers_and_repeated_continue(self):
+        server=self.server();row=request(server.server_port,self.cert)
+        for mode in ('interim-bare','interim-headers','interim-repeated'):
+            with self.subTest(mode=mode):
+                server.mode=mode;self.result(row,'received')
+        server.mode='interim-truncated';self.result(row,'connectionFailed')
+    def test_probe_trust_cannot_replace_public_https_trust(self):
+        server=self.server();row=request(server.server_port,self.cert)
+        row['target']['relayCaFile']=str(Path(self.temp.name)/'missing-probe-root.pem')
+        self.result(row,'received')
+        row['target']['caFile']=''
+        row['target']['relayCaFile']=str(self.cert)
+        self.result(row,'tlsFailed')
     def test_redirect_never_contacts_other_target(self):
         source=self.server();trap=self.server();source.mode='redirect'
         source.location=f'https://{DOMAIN}:{trap.server_port}/trap'

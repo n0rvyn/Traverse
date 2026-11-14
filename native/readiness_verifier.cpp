@@ -83,13 +83,15 @@ std::vector<std::string> readiness_local_addresses(const std::string &listen,con
     return {result.begin(),result.end()};
 }
 ReadinessTarget parse_readiness_target(const json &target) {
-    fields(target,{"host","port","basePath","address","caFile"});
+    if(target.contains("relayCaFile"))fields(target,{"host","port","basePath","address","caFile","relayCaFile"});
+    else fields(target,{"host","port","basePath","address","caFile"});
     ReadinessTarget result;
     result.host=EndpointSettings::normalize_host(text(target,"host"));
     result.base_path=EndpointSettings::normalize_base_path(text(target,"basePath"));
     const auto &port=target.at("port");
     if(!port.is_number_integer() || port<1 || port>65535)throw std::runtime_error("Invalid port");
     result.port=port.get<int>();result.ca_file=text(target,"caFile");
+    if(target.contains("relayCaFile"))result.relay_ca_file=text(target,"relayCaFile");
     result.address=canonical_readiness_address(text(target,"address"));
     result.origin="https://"+(result.host.find(':')==std::string::npos?result.host:"["+result.host+"]")+
         (result.port==443?"":":"+std::to_string(result.port));

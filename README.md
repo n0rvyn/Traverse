@@ -57,7 +57,9 @@ Open the displayed URL in ordinary Chrome and enter the pairing code shown local
 
 Existing configurations without `schemaVersion` retain their original HTTPS/media ports; `config.legacy.example.json` documents that format. A port conflict fails without replacing an existing service or selecting a different port. Portable archives have no binding capabilities and can use an editable high port. Native-package low-port support uses a constrained helper with the original desktop UID/GID.
 
-A trusted certificate and a reachable network route are required. Startup verifies its own HTTPS endpoint and configured hostname; this local check does not prove public DNS, firewall or NAT reachability. First-run host controls are included in the development packages. Automatic external checks and failure notifications remain on the [roadmap](docs/roadmap.md). A page reload currently requires pairing again; local Stop sharing remains authoritative.
+For an administrator-managed proxy, optional `listenPort` selects a separate native TCP listener and requires a loopback `listenAddress`. Optional `turnBackendPort` fixes the loopback TURN backend port. The public `port` still determines the displayed HTTPS URL, TURN address and UDP media port. For a TLS-terminating gateway, set advanced `proxyTls: true` so the running host shows “This URL uses your proxy’s certificate.” Private bindings alone do not select this mode. Settings preserves it for next launch. These fields do not configure a proxy or open firewall ports.
+
+A trusted certificate and a reachable network route are required. Startup verifies its own HTTPS endpoint and configured hostname; this local check does not prove public DNS, firewall or NAT reachability. First-run host controls are included in the development packages. An [authenticated observer](observer/README.md) supplies outside-in HTTPS and video checks; the host shows their scoped results, active Chrome health and native failure notifications. A page reload currently requires pairing again; local Stop sharing remains authoritative.
 
 ## Evidence and limits
 

@@ -62,11 +62,15 @@ ObserverConfiguration ObserverConfiguration::parse(const json &configuration) {
     for(const auto &row:rows) {
         fields(row,{"id","token","target"});
         ObserverRegistration registration;registration.id=hex(row,"id",32);registration.token=hex(row,"token",64);
-        const auto &target=row.at("target");fields(target,{"host","port","basePath","caFile","allowedAddresses"});
+        const auto &target=row.at("target");
+        if(target.contains("relayCaFile"))fields(target,{"host","port","basePath","caFile","allowedAddresses","relayCaFile"});
+        else fields(target,{"host","port","basePath","caFile","allowedAddresses"});
         registration.resolution=resolution_target({{"host",target.at("host")},{"allowedAddresses",target.at("allowedAddresses")}});
-        registration.target=parse_readiness_target({{"host",target.at("host")},{"port",target.at("port")},
+        json trusted_target={{"host",target.at("host")},{"port",target.at("port")},
             {"basePath",target.at("basePath")},{"caFile",target.at("caFile")},
-            {"address",*registration.resolution.allowed_addresses.begin()}});
+            {"address",*registration.resolution.allowed_addresses.begin()}};
+        if(target.contains("relayCaFile"))trusted_target["relayCaFile"]=target.at("relayCaFile");
+        registration.target=parse_readiness_target(trusted_target);
         if(!tokens.insert(registration.token).second || !result.registrations.emplace(registration.id,registration).second)
             throw std::runtime_error("Duplicate registry authority");
     }
@@ -77,6 +81,7 @@ json ObserverRegistration::verification(const std::string &address,const json &l
     if(!resolution.allowed_addresses.count(pin))throw std::runtime_error("Unregistered address");
     json request={{"schemaVersion",1},{"target",{{"host",target.host},{"port",target.port},
         {"basePath",target.base_path},{"caFile",target.ca_file},{"address",pin}}},{"lease",lease}};
+    if(target.relay_ca_file)request["target"]["relayCaFile"]=*target.relay_ca_file;
     (void)parse_readiness_verification(request); // Same complete lease/target contract as worker.
     return request;
 }

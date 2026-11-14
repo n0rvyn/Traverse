@@ -75,7 +75,7 @@ struct ObserverMedia::State {
                    alpn.substr(std::strlen(prefix)).find_first_not_of("0123456789abcdef")!=std::string::npos)
                     throw std::invalid_argument("Invalid relay identity");
                 bridge=std::make_unique<ProbeTlsRelay>(ProbeTlsEndpoint{request.target.address,request.target.host,
-                    request.target.ca_file,alpn,static_cast<unsigned short>(request.target.port)});
+                    request.target.relay_ca_file.value_or(request.target.ca_file),alpn,static_cast<unsigned short>(request.target.port)});
                 config["relay"]={{"port",bridge->port()},{"username",relay.at("username")},{"credential",relay.at("credential")}};
             } else {
                 if(!relay.is_null())throw std::invalid_argument("Unexpected relay grant");
@@ -86,6 +86,7 @@ struct ObserverMedia::State {
             if(!worker.begin(id,config))throw std::runtime_error("Observer media unavailable");
             json description,candidates=json::array();bool gathered=false;std::optional<json> received;
             auto consume=[&](bool before_offer) {
+                if(bridge && bridge->snapshot().failed)throw std::runtime_error("Probe TLS failed");
                 for(auto &event:worker.events()) {
                     if(event.at("peer")!=id)throw std::runtime_error("Wrong observer worker");
                     auto type=event.at("type").get<std::string>();

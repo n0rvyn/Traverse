@@ -14,6 +14,7 @@ Request fields:
 | `target.basePath` | Canonical Traverse base path |
 | `target.address` | Explicit numeric IPv4/IPv6 connection pin |
 | `target.caFile` | Operator-selected existing CA bundle; empty uses system trust |
+| `target.relayCaFile` | Optional CA bundle for native probe TLS only; omitted inherits `caFile`, empty explicitly uses system trust |
 | `lease` | Exact fresh private-owner `instance`, `id`, `token`, `nonce` |
 
 Only trusted operator configuration can supply the target, pin or CA file. Private/LAN addresses work when explicitly supplied. This worker does not authorize arbitrary addresses from a public registration request. Any public caller must enforce an operator-owned target policy before spawning a worker and validate each resolved address; the server below provides that boundary. There is no hostname-resolution fallback or redirect following. Certificate and hostname verification stay enabled. Port success is transport evidence; it does not prove Chrome permits that port.
@@ -56,6 +57,8 @@ A matched receipt proves this observer reached the configured HTTPS endpoint at 
 The private argument contract is `libexec/traverse/traverse-readiness-observer --config /absolute/private/observer.json`. Its native caller must apply the installed prefix environment returned by `traverse --runtime-environment` before executing it, as with the existing private helpers. The private ELF does not locate bundled libraries by itself. This starts an explicitly configured TLS listener; completed operator setup remains product work. Nothing enables or deploys this service automatically. The config must be an owner-only regular file; final symlinks and public permissions are rejected. It requires explicit `schemaVersion:1`, numeric `listenAddress`, `port`, existing `certificate` and `privateKey` absolute paths, and `registrations`. There is no implicit observer port or CA enrollment.
 
 Each registration has a distinct 32-character lowercase hex `id`, a distinct 64-character lowercase hex `token`, and `target` with `host`, `port`, `basePath`, `caFile`, and nonempty `allowedAddresses`. Addresses are explicit numeric unicast grants. Duplicate IDs, credentials and canonical address entries fail startup. These grants belong to the operator; an HTTP caller cannot change them. Do not reuse a Traverse controller credential as an observer registration token.
+
+When a TLS proxy presents a different certificate from the native host, the operator can also set `target.relayCaFile` to the host's exported public CA certificate. URL verification and media HTTPS signaling continue using `caFile`; only the native probe TLS connection uses `relayCaFile`. This does not change ordinary Chrome TURN trust or grant access to private keys. Existing registrations without the optional field retain their current trust behavior.
 
 Both routes require exactly one `X-Traverse-Registration` header and one `Authorization: Bearer …` header. Credentials are checked before JSON decoding or DNS/target work. Browser `Origin` requests are rejected; this is an authenticated host-to-observer protocol.
 
